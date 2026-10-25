@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Admin Panel</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; background: #111; color: #eee; }
+  table { border-collapse: collapse; margin-top: 1rem; }
+  td, th { padding: 6px 14px; border-bottom: 1px solid #333; text-align: left; }
+  button { margin-right: 6px; padding: 4px 10px; cursor: pointer; }
+</style>
+<h1>Server status</h1>
+<button onclick="logout()">Log out</button>
+<pre id="out">loading…</pre>
+
+<h2>Services</h2>
+<table>
+  <thead><tr><th>Name</th><th>State</th><th>Description</th><th>Actions</th></tr></thead>
+  <tbody id="svc"></tbody>
+</table>
+
+<script>
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) { location.href = "/login.html"; throw new Error("not logged in"); }
+  return r;
+}
+
+async function tick() {
+  const s = await (await api("/api/stats")).json();
+  document.getElementById("out").textContent =
+    `CPU:  ${s.cpu}%\nRAM:  ${s.mem}%\nDisk: ${s.disk}%`;
+}
+
+async function loadServices() {
+  const rows = await (await api("/api/services")).json();
+  const body = document.getElementById("svc");
+  body.replaceChildren();
+  for (const s of rows) {
+    const tr = document.createElement("tr");
+    for (const text of [s.name, s.state, s.description]) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    const td = document.createElement("td");
+    for (const a of s.actions) {
+      const b = document.createElement("button");
+      b.textContent = a;
+      b.onclick = () => act(s.name, a);
+      td.appendChild(b);
+    }
+    tr.appendChild(td);
+    body.appendChild(tr);
+  }
+}
+
+async function act(name, action) {
+  if (!confirm(`${action} ${name}?`)) return;
+  const r = await api(`/api/services/${name}/${action}`, { method: "POST" });
+  if (!r.ok) alert((await r.json()).detail);
+  loadServices();
+}
+
+async function logout() {
+  await fetch("/api/logout", { method: "POST" });
+  location.href = "/login.html";
+}
+
+tick(); loadServices();
+setInterval(tick, 2000);
+setInterval(loadServices, 5000);
+</script>
