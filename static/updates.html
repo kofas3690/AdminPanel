@@ -1,0 +1,122 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>System updates</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; background: #111; color: #eee; }
+  table { border-collapse: collapse; margin-top: 1rem; }
+  td, th { padding: 6px 14px; border-bottom: 1px solid #333; text-align: left; }
+  button { margin-right: 6px; padding: 6px 12px; cursor: pointer; }
+  a { color: #7ab7ff; }
+  .sec { color: #f87171; font-weight: 600; }
+  .warn { color: #fbbf24; }
+  #box {
+    height: 320px; overflow: auto; background: #000; color: #ddd;
+    padding: 8px; font-size: 13px; white-space: pre-wrap; word-break: break-all;
+  }
+</style>
+
+<p><a href="/">&larr; Back</a></p>
+<h1>System updates</h1>
+<p id="info">loading…</p>
+<p>
+  <button id="upd" onclick="startJob('update')">Refresh package lists</button>
+  <button id="upg" onclick="startJob('upgrade')">Upgrade all</button>
+</p>
+<p id="status"></p>
+<pre id="box"></pre>
+
+<h2>Upgradable packages</h2>
+<table>
+  <thead><tr><th>Package</th><th>Installed</th><th>Available</th><th>Source</th></tr></thead>
+  <tbody id="pk"></tbody>
+</table>
+
+<script>
+let jobId = "", since = 0, timer = null, wasRunning = false;
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) { location.href = "/login.html"; throw new Error("not logged in"); }
+  return r;
+}
+
+function fmtAge(s) {
+  if (s === null) return "unknown";
+  if (s < 3600) return Math.round(s / 60) + " min ago";
+  if (s < 86400) return Math.round(s / 3600) + " h ago";
+  return Math.round(s / 86400) + " days ago";
+}
+
+async function loadOverview() {
+  const d = await (await api("/api/updates")).json();
+  const info = document.getElementById("info");
+  info.textContent = `Package lists refreshed: ${fmtAge(d.cache_age)}. ` +
+    `${d.packages.length} package(s) can be upgraded.` +
+    (d.reboot_required ? " A reboot is required." : "");
+  info.className = d.reboot_required ? "warn" : "";
+  const upg = document.getElementById("upg");
+  upg.textContent = `Upgrade all (${d.packages.length})`;
+  upg.dataset.count = d.packages.length;
+  const body = document.getElementById("pk");
+  body.replaceChildren();
+  for (const p of d.packages) {
+    const tr = document.createElement("tr");
+    const cells = [p.name, p.old, p.new, p.security ? "security" : p.suite];
+    cells.forEach((text, i) => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (i === 3 && p.security) td.className = "sec";
+      tr.appendChild(td);
+    });
+    body.appendChild(tr);
+  }
+  setButtons(wasRunning);
+}
+
+function setButtons(running) {
+  document.getElementById("upd").disabled = running;
+  const upg = document.getElementById("upg");
+  upg.disabled = running || Number(upg.dataset.count || 0) === 0;
+}
+
+async function startJob(kind) {
+  if (kind === "upgrade" &&
+      !confirm("Upgrade all packages now? Do not stop the panel while it runs.")) return;
+  const r = await api(`/api/updates/run/${kind}`, { method: "POST" });
+  if (!r.ok) { alert((await r.json()).detail); return; }
+  poll();
+}
+
+async function poll() {
+  clearTimeout(timer);
+  let d;
+  try {
+    d = await (await api(`/api/updates/job?since=${since}&id=${jobId}`)).json();
+  } catch (e) { return; }
+  if (d.status === "none") return;
+
+  const box = document.getElementById("box");
+  if (d.id !== jobId) { jobId = d.id; box.textContent = ""; }
+  box.textContent += d.lines.map(l => l + "\n").join("");
+  since = d.next;
+  box.scrollTop = box.scrollHeight;
+
+  const running = d.status === "running";
+  document.getElementById("status").textContent = running
+    ? `Running ${d.kind}…`
+    : `${d.kind} ${d.status} (exit code ${d.returncode})`;
+  setButtons(running);
+
+  if (running) {
+    wasRunning = true;
+    timer = setTimeout(poll, 1000);
+  } else if (wasRunning) {
+    wasRunning = false;
+    loadOverview();
+  }
+}
+
+loadOverview();
+poll();
+</script>

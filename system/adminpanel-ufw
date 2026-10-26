@@ -1,0 +1,76 @@
+#!/usr/bin/python3 -I
+import ipaddress, re, subprocess, sys
+
+UFW = "/usr/sbin/ufw"
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+SSH_LINE = re.compile(r"(^|[\s/])22(/tcp|\s|$)|OpenSSH|\bssh\b")
+
+
+def die(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(2)
+
+
+def ufw(*args):
+    return subprocess.run([UFW, *args], capture_output=True, text=True,
+                          env=ENV, timeout=60)
+
+
+def show(r):
+    sys.stdout.write(r.stdout)
+    sys.stderr.write(r.stderr)
+    sys.exit(r.returncode)
+
+
+def parse_rule(a):
+    if len(a) not in (2, 3):
+        die("usage: allow|delete PORT tcp|udp [SOURCE]")
+    port, proto = a[0], a[1]
+    if not re.fullmatch(r"[1-9][0-9]{0,4}", port) or int(port) > 65535:
+        die("invalid port")
+    if proto not in ("tcp", "udp"):
+        die("invalid protocol")
+    source = None
+    if len(a) == 3:
+        try:
+            net = ipaddress.ip_network(a[2], strict=False)
+        except ValueError:
+            die("invalid source address")
+        source = str(net.network_address) if net.num_addresses == 1 else str(net)
+    return int(port), proto, source
+
+
+def rule_args(port, proto, source):
+    if source is None:
+        return [f"{port}/{proto}"]
+    return ["proto", proto, "from", source, "to", "any", "port", str(port)]
+
+
+def main():
+    a = sys.argv[1:]
+    if not a:
+        die("usage: status|added|allow|delete|enable")
+    cmd, rest = a[0], a[1:]
+
+    if cmd == "status" and not rest:
+        show(ufw("status", "verbose"))
+    if cmd == "added" and not rest:
+        show(ufw("show", "added"))
+    if cmd == "allow":
+        show(ufw("allow", *rule_args(*parse_rule(rest))))
+    if cmd == "delete":
+        port, proto, source = parse_rule(rest)
+        if port == 22:
+            die("refusing to remove SSH (port 22) rules; do that from the console")
+        show(ufw("delete", "allow", *rule_args(port, proto, source)))
+    if cmd == "enable" and not rest:
+        added = ufw("show", "added").stdout
+        ok = any(l.startswith(("ufw allow", "ufw limit")) and SSH_LINE.search(l)
+                 for l in added.splitlines())
+        if not ok:
+            die("refusing to enable: no SSH (22/tcp) allow rule exists yet")
+        show(ufw("--force", "enable"))
+    die("unknown or malformed command")
+
+
+main()

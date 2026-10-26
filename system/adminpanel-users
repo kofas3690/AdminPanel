@@ -1,0 +1,133 @@
+#!/usr/bin/python3 -I
+import grp, json, pwd, re, subprocess, sys, time
+
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+NAME = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+ADMIN_GROUPS = {"sudo", "admin", "wheel"}
+UID_MIN, UID_MAX = 1000, 59999
+MIN_PW, MAX_PW = 12, 128
+
+
+def die(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(2)
+
+
+def run(*args, stdin=None):
+    kw = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
+    r = subprocess.run(list(args), capture_output=True, text=True,
+                       env=ENV, timeout=60, **kw)
+    if r.returncode != 0:
+        die((r.stderr or r.stdout).strip() or f"{args[0]} failed")
+    return r
+
+
+def shadow():
+    rows = {}
+    with open("/etc/shadow") as f:
+        for line in f:
+            parts = line.rstrip("\n").split(":")
+            if len(parts) >= 8:
+                rows[parts[0]] = parts
+    return rows
+
+
+def is_admin(p):
+    for g in grp.getgrall():
+        if g.gr_name in ADMIN_GROUPS and (p.pw_name in g.gr_mem or g.gr_gid == p.pw_gid):
+            return True
+    return False
+
+
+def managed(name):
+    if not NAME.fullmatch(name):
+        die("invalid user name")
+    try:
+        p = pwd.getpwnam(name)
+    except KeyError:
+        die("no such user")
+    if not UID_MIN <= p.pw_uid <= UID_MAX:
+        die("system accounts can't be managed here")
+    if is_admin(p):
+        die("administrator accounts must be managed from the console")
+    return p
+
+
+def cmd_list():
+    rows, today, out = shadow(), int(time.time() // 86400), []
+    for p in sorted(pwd.getpwall(), key=lambda p: p.pw_uid):
+        if not UID_MIN <= p.pw_uid <= UID_MAX:
+            continue
+        s = rows.get(p.pw_name, [])
+        h = s[1] if len(s) > 1 else ""
+        exp = s[7] if len(s) > 7 else ""
+        out.append({
+            "name": p.pw_name, "uid": p.pw_uid, "home": p.pw_dir,
+            "admin": is_admin(p),
+            "has_password": bool(h.lstrip("!*")),
+            "locked": h.startswith("!") or (exp.isdigit() and int(exp) <= today),
+        })
+    print(json.dumps(out))
+
+
+def cmd_create(name):
+    if not NAME.fullmatch(name):
+        die("invalid user name")
+    if any(p.pw_name == name for p in pwd.getpwall()):
+        die("that user already exists")
+    run("/usr/sbin/useradd", "-m", "-s", "/bin/bash", name)
+    print("created")
+
+
+def cmd_setpass(name):
+    managed(name)
+    pw = sys.stdin.readline().rstrip("\n")
+    if not MIN_PW <= len(pw) <= MAX_PW:
+        die(f"password must be {MIN_PW} to {MAX_PW} characters")
+    if any(ord(c) < 32 or ord(c) == 127 for c in pw):
+        die("password contains control characters")
+    run("/usr/sbin/chpasswd", stdin=f"{name}:{pw}\n")
+    run("/usr/bin/chage", "-d", "0", name)
+    print("password set; the user must change it at next login")
+
+
+def cmd_lock(name):
+    managed(name)
+    run("/usr/sbin/usermod", "-L", "-e", "1", name)
+    subprocess.run(["/usr/bin/loginctl", "terminate-user", name],
+                   capture_output=True, stdin=subprocess.DEVNULL,
+                   env=ENV, timeout=30)
+    print("locked")
+
+
+def cmd_unlock(name):
+    managed(name)
+    h = shadow().get(name, ["", ""])[1]
+    if not h.lstrip("!*"):
+        die("this user has no password yet; set one first")
+    if h.startswith("!"):
+        run("/usr/sbin/usermod", "-U", name)
+    run("/usr/sbin/usermod", "-e", "", name)
+    print("unlocked")
+
+
+def cmd_delete(name):
+    managed(name)
+    run("/usr/sbin/userdel", name)
+    print("deleted (home directory kept)")
+
+
+CMDS = {"create": cmd_create, "setpass": cmd_setpass, "lock": cmd_lock,
+        "unlock": cmd_unlock, "delete": cmd_delete}
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["list"]:
+        return cmd_list()
+    if len(a) == 2 and a[0] in CMDS:
+        return CMDS[a[0]](a[1])
+    die("usage: list | create|setpass|lock|unlock|delete NAME")
+
+
+main()

@@ -1,0 +1,10 @@
+Cmnd_Alias PANEL_SVC = \
+    /usr/bin/systemctl start nginx, \
+    /usr/bin/systemctl stop nginx, \
+    /usr/bin/systemctl restart nginx, \
+    /usr/bin/systemctl start cron, \
+    /usr/bin/systemctl stop cron, \
+    /usr/bin/systemctl restart cron, \
+    /usr/bin/systemctl restart ssh
+
+adminpanel ALL=(root) NOPASSWD: PANEL_SVC

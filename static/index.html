@@ -1,26 +1,42 @@
 <!doctype html>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Admin Panel</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 2rem; background: #111; color: #eee; }
   table { border-collapse: collapse; margin-top: 1rem; }
   td, th { padding: 6px 14px; border-bottom: 1px solid #333; text-align: left; }
   button { margin-right: 6px; padding: 4px 10px; cursor: pointer; }
+  #logbox {
+    height: 300px; overflow: auto; background: #000; color: #ddd;
+    padding: 8px; font-size: 13px; white-space: pre-wrap; word-break: break-all;
+  }
+  a { color: #7ab7ff; }
 </style>
+
 <h1>Server status</h1>
-<button onclick="logout()">Log out</button>
+<button onclick="logout()">Log out</button> <a href="/updates.html">System updates</a> <a href="/firewall.html">Firewall</a> <a href="/users.html">Users</a>
 <pre id="out">loading…</pre>
 
 <h2>Services</h2>
 <table>
-  <thead><tr><th>Name</th><th>State</th><th>Description</th><th>Actions</th></tr></thead>
+  <thead>
+    <tr><th>Name</th><th>State</th><th>Description</th><th>Actions</th></tr>
+  </thead>
   <tbody id="svc"></tbody>
 </table>
+
+<h2>Logs <span id="logname"></span></h2>
+<button onclick="stopLogs()">Stop</button>
+<pre id="logbox"></pre>
 
 <script>
 async function api(path, opts) {
   const r = await fetch(path, opts);
-  if (r.status === 401) { location.href = "/login.html"; throw new Error("not logged in"); }
+  if (r.status === 401) {
+    location.href = "/login.html";
+    throw new Error("not logged in");
+  }
   return r;
 }
 
@@ -48,6 +64,12 @@ async function loadServices() {
       b.onclick = () => act(s.name, a);
       td.appendChild(b);
     }
+    if (s.state !== "not installed") {
+      const lb = document.createElement("button");
+      lb.textContent = "logs";
+      lb.onclick = () => showLogs(s.name);
+      td.appendChild(lb);
+    }
     tr.appendChild(td);
     body.appendChild(tr);
   }
@@ -60,12 +82,44 @@ async function act(name, action) {
   loadServices();
 }
 
+let ws = null;
+
+function stopLogs() {
+  if (ws) {
+    ws.onclose = null;
+    ws.close();
+    ws = null;
+  }
+}
+
+function showLogs(name) {
+  stopLogs();
+  const box = document.getElementById("logbox");
+  box.textContent = "";
+  document.getElementById("logname").textContent = "— " + name;
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${proto}//${location.host}/api/logs/${name}`);
+  ws.onmessage = (e) => {
+    const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+    box.textContent += e.data + "\n";
+    if (box.textContent.length > 200000)
+      box.textContent = box.textContent.slice(-100000);
+    if (stick) box.scrollTop = box.scrollHeight;
+  };
+  ws.onclose = () => {
+    if (!box.textContent)
+      box.textContent = "(no data: not logged in, or connection closed)";
+  };
+}
+
 async function logout() {
+  stopLogs();
   await fetch("/api/logout", { method: "POST" });
   location.href = "/login.html";
 }
 
-tick(); loadServices();
+tick();
+loadServices();
 setInterval(tick, 2000);
 setInterval(loadServices, 5000);
 </script>

@@ -1,0 +1,131 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Firewall</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; background: #111; color: #eee; }
+  table { border-collapse: collapse; margin-top: 1rem; }
+  td, th { padding: 6px 14px; border-bottom: 1px solid #333; text-align: left; }
+  button { margin-right: 6px; padding: 6px 12px; cursor: pointer; }
+  input, select { padding: 6px; background: #222; color: #eee; border: 1px solid #444; border-radius: 4px; }
+  a { color: #7ab7ff; }
+  .warn { color: #fbbf24; }
+  .muted { color: #888; }
+  #raw { background: #000; color: #ddd; padding: 8px; font-size: 13px; overflow: auto; }
+</style>
+
+<p><a href="/">&larr; Back</a></p>
+<h1>Firewall</h1>
+<p id="info">loading…</p>
+<p><button id="enable" hidden onclick="enableFw()">Enable firewall</button></p>
+
+<h2>Allow rules</h2>
+<table>
+  <thead><tr><th>Rule</th><th>Port</th><th>Protocol</th><th>From</th><th></th></tr></thead>
+  <tbody id="rules"></tbody>
+</table>
+
+<h2>Add a rule</h2>
+<form id="add">
+  <input id="port" type="number" min="1" max="65535" placeholder="Port" required>
+  <select id="proto"><option>tcp</option><option>udp</option></select>
+  <input id="src" size="30" placeholder="From (optional), e.g. 192.168.109.0/24">
+  <button>Allow</button>
+</form>
+<p class="muted">Leave "From" empty to allow from anywhere. SSH (port 22) rules can't be removed here.</p>
+
+<h2>Running firewall</h2>
+<pre id="raw"></pre>
+
+<script>
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) { location.href = "/login.html"; throw new Error("not logged in"); }
+  return r;
+}
+
+async function errText(r) {
+  try {
+    const j = await r.json();
+    return typeof j.detail === "string" ? j.detail : "Invalid input";
+  } catch (e) { return "Request failed (" + r.status + ")"; }
+}
+
+function post(path, body) {
+  const opts = { method: "POST" };
+  if (body) {
+    opts.headers = { "Content-Type": "application/json" };
+    opts.body = JSON.stringify(body);
+  }
+  return api(path, opts);
+}
+
+async function load() {
+  const r = await api("/api/firewall");
+  const info = document.getElementById("info");
+  if (!r.ok) { info.textContent = "Error: " + await errText(r); return; }
+  const d = await r.json();
+  info.textContent = d.active
+    ? "Firewall is ACTIVE."
+    : "Firewall is INACTIVE: the rules below are saved but not enforced yet.";
+  info.className = d.active ? "" : "warn";
+  document.getElementById("enable").hidden = d.active;
+  document.getElementById("raw").textContent = d.status_text;
+
+  const body = document.getElementById("rules");
+  body.replaceChildren();
+  for (const x of d.rules) {
+    const tr = document.createElement("tr");
+    [x.raw, x.port ?? "", x.proto ?? "", x.source ?? "Anywhere"].forEach((t) => {
+      const td = document.createElement("td");
+      td.textContent = t;
+      tr.appendChild(td);
+    });
+    const td = document.createElement("td");
+    if (x.protected) {
+      td.textContent = "protected";
+      td.className = "muted";
+    } else if (!x.manageable) {
+      td.textContent = "manage from console";
+      td.className = "muted";
+    } else {
+      const b = document.createElement("button");
+      b.textContent = "Remove";
+      b.onclick = () => removeRule(x);
+      td.appendChild(b);
+    }
+    tr.appendChild(td);
+    body.appendChild(tr);
+  }
+}
+
+async function removeRule(x) {
+  if (!confirm(`Remove rule: ${x.raw}?`)) return;
+  const r = await post("/api/firewall/delete", { port: x.port, proto: x.proto, source: x.source });
+  if (!r.ok) alert(await errText(r));
+  load();
+}
+
+async function enableFw() {
+  if (!confirm("Enable the firewall now? Incoming connections without an allow rule will be blocked. SSH (22/tcp) must already be allowed."))
+    return;
+  const r = await post("/api/firewall/enable");
+  if (!r.ok) alert(await errText(r));
+  load();
+}
+
+document.getElementById("add").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const src = document.getElementById("src").value.trim();
+  const r = await post("/api/firewall/allow", {
+    port: Number(document.getElementById("port").value),
+    proto: document.getElementById("proto").value,
+    source: src === "" ? null : src,
+  });
+  if (!r.ok) { alert(await errText(r)); return; }
+  e.target.reset();
+  load();
+});
+
+load();
+</script>
