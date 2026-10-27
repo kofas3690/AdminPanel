@@ -1,0 +1,85 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terminal</title>
+<link rel="stylesheet" href="/vendor/xterm.css">
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; background: #111; color: #eee; }
+  button { margin-right: 6px; padding: 6px 12px; cursor: pointer; }
+  input { padding: 6px; background: #222; color: #eee; border: 1px solid #444; border-radius: 4px; }
+  a { color: #7ab7ff; }
+  .muted { color: #888; }
+  #term { height: calc(100vh - 260px); min-height: 300px; background: #000; padding: 6px; }
+</style>
+
+<p><a href="/">&larr; Back</a></p>
+<h1>Terminal</h1>
+<p class="muted">This opens an SSH login to this server. Enter the Linux account's own password
+when it asks. The session closes after 15 minutes without typing, or when you log out of the panel.</p>
+<p>
+  <label>Log in as <input id="luser" value="kofas" size="16" autocomplete="off"></label>
+  <button id="connect">Connect</button>
+  <button id="disconnect" disabled>Disconnect</button>
+  <span id="state" class="muted">disconnected</span>
+</p>
+<div id="term"></div>
+
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
+<script>
+const term = new Terminal({ cursorBlink: true, fontSize: 14, scrollback: 5000,
+                            theme: { background: "#000000" } });
+const fit = new FitAddon.FitAddon();
+term.loadAddon(fit);
+term.open(document.getElementById("term"));
+fit.fit();
+
+const enc = new TextEncoder();
+let ws = null;
+
+function setState(text, connected) {
+  document.getElementById("state").textContent = text;
+  document.getElementById("connect").disabled = connected;
+  document.getElementById("disconnect").disabled = !connected;
+}
+
+function connect() {
+  if (ws) return;
+  const user = document.getElementById("luser").value.trim();
+  if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(user)) { alert("Invalid user name"); return; }
+  term.reset();
+  fit.fit();
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = `${proto}//${location.host}/api/terminal/ws` +
+    `?u=${encodeURIComponent(user)}&cols=${term.cols}&rows=${term.rows}`;
+  const sock = new WebSocket(url);
+  sock.binaryType = "arraybuffer";
+  let opened = false;
+  ws = sock;
+  setState("connecting…", true);
+  sock.onopen = () => { opened = true; setState("connected", true); term.focus(); };
+  sock.onmessage = (e) => {
+    if (e.data instanceof ArrayBuffer) term.write(new Uint8Array(e.data));
+  };
+  sock.onclose = () => {
+    if (ws === sock) ws = null;
+    setState("disconnected", false);
+    term.write(opened
+      ? "\r\n[connection closed]\r\n"
+      : "\r\n[could not connect: not logged in, too many terminals open, or the host key file is missing]\r\n");
+  };
+}
+
+term.onData((d) => {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(enc.encode(d));
+});
+
+term.onResize(({ cols, rows }) => {
+  if (ws && ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: "resize", cols, rows }));
+});
+
+window.addEventListener("resize", () => fit.fit());
+document.getElementById("connect").onclick = connect;
+document.getElementById("disconnect").onclick = () => { if (ws) ws.close(); };
+</script>

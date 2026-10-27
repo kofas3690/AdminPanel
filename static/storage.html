@@ -1,0 +1,108 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storage</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; background: #111; color: #eee; }
+  table { border-collapse: collapse; margin: 0.5rem 0 1.5rem; }
+  td, th { padding: 6px 14px; border-bottom: 1px solid #333; text-align: left; }
+  a { color: #7ab7ff; }
+  progress { width: 110px; vertical-align: middle; }
+  .muted { color: #888; }
+  .warn { color: #fbbf24; }
+  .crit { color: #f87171; font-weight: 600; }
+</style>
+
+<p><a href="/">&larr; Back</a> &nbsp; <a href="/files.html">Files</a></p>
+<h1>Storage</h1>
+<p class="muted">Read-only overview. Formatting, partitioning and mounting are done from the console.</p>
+
+<h2>Filesystems</h2>
+<table>
+  <thead><tr><th>Mount</th><th>Device</th><th>Type</th><th>Size</th><th>Used</th><th>Free</th><th>Usage</th><th>Inodes used</th></tr></thead>
+  <tbody id="mounts"></tbody>
+</table>
+
+<h2>Disks and partitions</h2>
+<table>
+  <thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Filesystem</th><th>Mounted at</th><th>Model</th></tr></thead>
+  <tbody id="devs"></tbody>
+</table>
+
+<h2>Swap</h2>
+<p id="swap"></p>
+
+<script>
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) { location.href = "/login.html"; throw new Error("not logged in"); }
+  return r;
+}
+
+function fmt(n) {
+  const u = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(1) : n) + " " + u[i];
+}
+
+function cell(tr, text, cls) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  if (cls) td.className = cls;
+  tr.appendChild(td);
+  return td;
+}
+
+async function load() {
+  const r = await api("/api/storage");
+  if (!r.ok) return;
+  const d = await r.json();
+
+  const mb = document.getElementById("mounts");
+  mb.replaceChildren();
+  for (const m of d.mounts) {
+    const tr = document.createElement("tr");
+    cell(tr, m.mount + (m.readonly ? " (read-only)" : ""));
+    cell(tr, m.device);
+    cell(tr, m.fstype);
+    cell(tr, fmt(m.total));
+    cell(tr, fmt(m.used));
+    cell(tr, fmt(m.free));
+    const td = document.createElement("td");
+    const bar = document.createElement("progress");
+    bar.max = 100; bar.value = m.percent;
+    td.appendChild(bar);
+    const pct = document.createElement("span");
+    pct.textContent = " " + m.percent.toFixed(1) + "%";
+    pct.className = m.percent >= 95 ? "crit" : m.percent >= 85 ? "warn" : "";
+    td.appendChild(pct);
+    tr.appendChild(td);
+    const ip = m.inodes_total > 0
+      ? ((m.inodes_total - m.inodes_free) / m.inodes_total * 100).toFixed(1) + "%"
+      : "n/a";
+    cell(tr, ip);
+    mb.appendChild(tr);
+  }
+
+  const db = document.getElementById("devs");
+  db.replaceChildren();
+  for (const x of d.devices) {
+    const tr = document.createElement("tr");
+    cell(tr, "\u00a0\u00a0\u00a0".repeat(x.depth) + x.name);
+    cell(tr, x.type + (x.removable ? " (removable)" : "") + (x.readonly ? " (read-only)" : ""));
+    cell(tr, fmt(x.size));
+    cell(tr, x.fstype);
+    cell(tr, x.mounts.join(", "));
+    cell(tr, x.model);
+    db.appendChild(tr);
+  }
+
+  document.getElementById("swap").textContent = d.swap.total
+    ? `${fmt(d.swap.used)} used of ${fmt(d.swap.total)} (${d.swap.percent}%)`
+    : "No swap configured";
+}
+
+load();
+setInterval(load, 30000);
+</script>

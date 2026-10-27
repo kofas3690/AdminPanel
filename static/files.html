@@ -1,0 +1,274 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Files</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; background: #111; color: #eee; }
+  table { border-collapse: collapse; margin-top: 1rem; }
+  td, th { padding: 6px 14px; border-bottom: 1px solid #333; text-align: left; }
+  button, a.btn { margin-right: 6px; padding: 5px 11px; cursor: pointer; background: #2a2a2a; color: #eee;
+                  border: 1px solid #555; border-radius: 4px; font: inherit; text-decoration: none; }
+  select { padding: 5px; background: #222; color: #eee; border: 1px solid #444; border-radius: 4px; }
+  a { color: #7ab7ff; }
+  .muted { color: #888; }
+  #editor textarea { width: 100%; height: 420px; box-sizing: border-box; background: #000; color: #ddd;
+                     border: 1px solid #444; padding: 8px; font: 13px ui-monospace, monospace; }
+</style>
+
+<p><a href="/">&larr; Back</a> &nbsp; <a href="/storage.html">Storage</a></p>
+<h1>Files</h1>
+<p>
+  <label>Location <select id="root"></select></label>
+  &nbsp; <span id="crumbs"></span>
+</p>
+<p>
+  <button id="up" hidden>Upload…</button><input id="picker" type="file" multiple hidden>
+  <button id="mk" hidden>New folder</button>
+  <button id="refresh">Refresh</button>
+  <span id="msg" class="muted"></span>
+</p>
+
+<table>
+  <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th>Owner</th><th>Permissions</th><th></th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<p id="more" class="muted" hidden>Only the first 5000 entries are shown.</p>
+
+<div id="editor" hidden>
+  <h2 id="etitle"></h2>
+  <textarea id="etext" spellcheck="false"></textarea>
+  <p><button id="esave">Save</button><button id="eclose">Close</button> <span id="emsg" class="muted"></span></p>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { root: "", path: [], writable: false, editing: null };
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) { location.href = "/login.html"; throw new Error("not logged in"); }
+  return r;
+}
+
+async function errText(r) {
+  try {
+    const j = await r.json();
+    if (typeof j.detail === "string") return j.detail;
+  } catch (e) {}
+  return "Request failed (" + r.status + ")";
+}
+
+const qs = (o) => new URLSearchParams(o).toString();
+const rel = (name) => [...state.path, name].join("/");
+const send = (method, url, body) => api(url, {
+  method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+});
+const msg = (t) => { $("msg").textContent = t || ""; };
+
+function fmtSize(n) {
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(1) : n) + " " + u[i];
+}
+
+function btn(text, fn) {
+  const b = document.createElement("button");
+  b.textContent = text;
+  b.onclick = fn;
+  return b;
+}
+
+async function loadRoots() {
+  const roots = await (await api("/api/files/roots")).json();
+  const sel = $("root");
+  sel.replaceChildren();
+  for (const r of roots) {
+    const o = document.createElement("option");
+    o.value = r.name;
+    o.textContent = r.name + (r.writable ? "" : " (read-only)");
+    sel.appendChild(o);
+  }
+  state.root = roots.length ? roots[0].name : "";
+  sel.value = state.root;
+  sel.onchange = () => { state.root = sel.value; state.path = []; closeEditor(); load(); };
+  load();
+}
+
+function renderCrumbs() {
+  const c = $("crumbs");
+  c.replaceChildren();
+  const add = (text, depth) => {
+    const a = document.createElement("a");
+    a.href = "#";
+    a.textContent = text;
+    a.onclick = (e) => { e.preventDefault(); state.path = state.path.slice(0, depth); closeEditor(); load(); };
+    c.appendChild(a);
+  };
+  add("/", 0);
+  state.path.forEach((p, i) => { c.append(" / "); add(p, i + 1); });
+}
+
+async function load() {
+  const r = await api("/api/files/list?" + qs({ root: state.root, path: state.path.join("/") }));
+  if (!r.ok) { msg("Error: " + await errText(r)); $("rows").replaceChildren(); return; }
+  msg("");
+  const d = await r.json();
+  state.writable = d.writable;
+  $("up").hidden = !d.writable;
+  $("mk").hidden = !d.writable;
+  $("more").hidden = !d.truncated;
+  renderCrumbs();
+
+  const body = $("rows");
+  body.replaceChildren();
+  for (const it of d.items) {
+    const tr = document.createElement("tr");
+    const nameTd = document.createElement("td");
+    if (it.type === "dir" && !it.unsafe) {
+      const a = document.createElement("a");
+      a.href = "#";
+      a.textContent = it.name + "/";
+      a.onclick = (e) => { e.preventDefault(); state.path.push(it.name); closeEditor(); load(); };
+      nameTd.appendChild(a);
+    } else {
+      nameTd.textContent = it.name + (it.type === "link" ? "  (link)" : "");
+    }
+    tr.appendChild(nameTd);
+    [it.type === "dir" ? "" : fmtSize(it.size),
+     new Date(it.mtime * 1000).toLocaleString(), it.owner, it.mode].forEach((t) => {
+      const td = document.createElement("td");
+      td.textContent = t;
+      tr.appendChild(td);
+    });
+    const act = document.createElement("td");
+    if (it.type === "file" && it.readable && !it.unsafe) {
+      const dl = document.createElement("a");
+      dl.className = "btn";
+      dl.textContent = "Download";
+      dl.href = "/api/files/download?" + qs({ root: state.root, path: rel(it.name) });
+      act.appendChild(dl);
+      if (it.size <= 262144) act.appendChild(btn("Edit", () => openEditor(it.name)));
+    }
+    if (state.writable && !it.unsafe && it.type !== "other") {
+      act.appendChild(btn("Rename", () => renameItem(it)));
+      act.appendChild(btn("Delete", () => deleteItem(it)));
+    }
+    tr.appendChild(act);
+    body.appendChild(tr);
+  }
+}
+
+async function renameItem(it) {
+  const nn = prompt(`Rename "${it.name}" to:`, it.name);
+  if (!nn || nn === it.name) return;
+  const r = await send("POST", "/api/files/rename", { root: state.root, path: rel(it.name), new_name: nn });
+  if (!r.ok) alert(await errText(r));
+  load();
+}
+
+async function deleteItem(it) {
+  if (!confirm(`Delete "${it.name}"?`)) return;
+  const p = rel(it.name);
+  let r = await send("POST", "/api/files/delete", { root: state.root, path: p, recursive: false });
+  if (r.status === 409 && it.type === "dir") {
+    const typed = prompt(`"${it.name}" is not empty. Type its name to delete it and everything inside:`);
+    if (typed !== it.name) return;
+    r = await send("POST", "/api/files/delete", { root: state.root, path: p, recursive: true });
+  }
+  if (!r.ok) alert(await errText(r));
+  load();
+}
+
+async function makeFolder() {
+  const n = prompt("New folder name:");
+  if (!n) return;
+  const r = await send("POST", "/api/files/mkdir", { root: state.root, path: rel(n) });
+  if (!r.ok) alert(await errText(r));
+  load();
+}
+
+function uploadOne(file, overwrite) {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", "/api/files/upload?" + qs({
+      root: state.root, path: rel(file.name), overwrite: overwrite ? "true" : "false",
+    }));
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) msg(`Uploading ${file.name}: ${Math.round(100 * e.loaded / e.total)}%`);
+    };
+    xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
+    xhr.onerror = () => resolve({ status: 0, body: "" });
+    xhr.send(file);
+  });
+}
+
+function detailOf(res) {
+  try {
+    const j = JSON.parse(res.body);
+    if (typeof j.detail === "string") return j.detail;
+  } catch (e) {}
+  if (res.status === 413) return "file too large (check the nginx upload limit)";
+  if (res.status === 0) return "network error";
+  return "HTTP " + res.status;
+}
+
+async function uploadFile(f) {
+  let res = await uploadOne(f, false);
+  if (res.status === 409) {
+    if (!confirm(`"${f.name}" already exists. Replace it?`)) return;
+    res = await uploadOne(f, true);
+  }
+  if (res.status === 401) { location.href = "/login.html"; return; }
+  if (res.status !== 200) alert(`Upload of "${f.name}" failed: ` + detailOf(res));
+}
+
+async function openEditor(name) {
+  const path = rel(name);
+  const r = await api("/api/files/read?" + qs({ root: state.root, path }));
+  if (!r.ok) { alert(await errText(r)); return; }
+  const d = await r.json();
+  state.editing = { root: state.root, path, mtime_ns: d.mtime_ns };
+  $("etitle").textContent = name;
+  $("etext").value = d.text;
+  $("etext").readOnly = !d.writable;
+  $("esave").hidden = !d.writable;
+  $("emsg").textContent = d.writable ? "" : "Read-only";
+  $("editor").hidden = false;
+  $("etext").focus();
+}
+
+function closeEditor() {
+  state.editing = null;
+  $("editor").hidden = true;
+}
+
+async function saveEditor() {
+  const e = state.editing;
+  if (!e) return;
+  const r = await send("PUT", "/api/files/write", {
+    root: e.root, path: e.path, text: $("etext").value, mtime_ns: e.mtime_ns,
+  });
+  if (!r.ok) { $("emsg").textContent = await errText(r); return; }
+  e.mtime_ns = (await r.json()).mtime_ns;
+  $("emsg").textContent = "Saved " + new Date().toLocaleTimeString();
+  load();
+}
+
+$("up").onclick = () => $("picker").click();
+$("picker").onchange = async () => {
+  for (const f of $("picker").files) await uploadFile(f);
+  $("picker").value = "";
+  msg("Upload finished");
+  load();
+};
+$("mk").onclick = makeFolder;
+$("refresh").onclick = load;
+$("esave").onclick = saveEditor;
+$("eclose").onclick = closeEditor;
+$("etext").addEventListener("keydown", (ev) => {
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") { ev.preventDefault(); saveEditor(); }
+});
+
+loadRoots();
+</script>

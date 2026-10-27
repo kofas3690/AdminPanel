@@ -3,3 +3,5 @@ users.json
 audit.log
 .venv/
 __pycache__/
+panel.db
+panel.db-journal
