@@ -2,7 +2,7 @@
   "use strict";
   const NAV = [
     ["System", [["Overview", "/"], ["Services", "/units.html"], ["Storage", "/storage.html"],
-                ["Networking", "/network.html"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html"]]],
+                ["Networking", "/network.html"], ["VPN", "/vpn.html"], ["Proxy", "/proxy.html"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html"]]],
     ["Tools", [["Software updates", "/updates.html"], ["File manager", "/files.html"],
                ["Terminal", "/terminal.html"]]],
   ];

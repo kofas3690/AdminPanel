@@ -1,0 +1,95 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proxy</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/shell.js" defer></script>
+<style>
+  .card { max-width: 720px; margin: 14px 0; }
+  .card label { display: block; margin: 12px 0; }
+  .card input[type=text], .card textarea { width: 100%; margin-top: 4px; }
+  .card textarea { height: 90px; }
+  #results div { margin: 4px 0; }
+</style>
+
+<h1>Proxy</h1>
+<p class="muted">An outgoing proxy for this server's own downloads: software updates and new login sessions.</p>
+
+<div class="card">
+  <label><input type="checkbox" id="enabled"> Use a proxy for outgoing connections</label>
+  <label>HTTP proxy <input id="http" type="text" placeholder="http://proxy.example.com:3128" autocomplete="off"></label>
+  <label>HTTPS proxy (leave empty to use the same) <input id="https" type="text" placeholder="http://proxy.example.com:3128" autocomplete="off"></label>
+  <label>Don't use the proxy for (comma or line separated; localhost, 127.0.0.1 and ::1 are always included)
+    <textarea id="noproxy" placeholder=".internal.example.com, 10.0.0.0/8"></textarea></label>
+  <label><input type="checkbox" id="apt"> Software updates (apt)</label>
+  <label><input type="checkbox" id="envf"> New login sessions and terminals (/etc/environment)</label>
+  <p>
+    <button id="test">Test</button>
+    <button id="save" class="primary">Save</button>
+    <span id="msg" class="muted"></span>
+  </p>
+  <div id="results"></div>
+</div>
+
+<div class="card">
+  <h3>Good to know</h3>
+  <p class="muted">Proxy addresses can't contain a user name or password, because these settings are readable by every user on the server. Supported schemes are http, https, socks5 and socks5h.</p>
+  <p class="muted">Programs that are already running keep their old settings, and services started by the system don't read /etc/environment. Only apt and new logins pick up changes straight away.</p>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const JSON_H = { "Content-Type": "application/json" };
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) { location.href = "/login.html"; throw new Error("not logged in"); }
+  return r;
+}
+async function errText(r) {
+  try { const j = await r.json(); if (typeof j.detail === "string") return j.detail; } catch (e) {}
+  return "Request failed (" + r.status + ")";
+}
+function values() {
+  return { enabled: $("enabled").checked, http: $("http").value.trim(), https: $("https").value.trim(),
+    no_proxy: $("noproxy").value.split(/[\s,]+/).filter(Boolean), apt: $("apt").checked, environment: $("envf").checked };
+}
+
+async function load() {
+  const r = await api("/api/network/proxy");
+  if (!r.ok) { $("msg").textContent = await errText(r); return; }
+  const d = await r.json();
+  $("enabled").checked = d.enabled; $("http").value = d.http; $("https").value = d.https;
+  $("noproxy").value = (d.no_proxy || []).join(", "); $("apt").checked = d.apt; $("envf").checked = d.environment;
+}
+
+$("test").onclick = async () => {
+  const v = values(), urls = [...new Set([v.http, v.https].filter(Boolean))];
+  const box = $("results");
+  box.replaceChildren();
+  if (!urls.length) { $("msg").textContent = "Enter a proxy address to test."; return; }
+  $("msg").textContent = "Testing\u2026";
+  $("test").disabled = true;
+  for (const url of urls) {
+    const r = await api("/api/network/proxy/test", { method: "POST", headers: JSON_H, body: JSON.stringify({ url }) });
+    if (!r.ok) { const d = document.createElement("div"); d.className = "crit"; d.textContent = url + ": " + await errText(r); box.appendChild(d); continue; }
+    for (const x of (await r.json()).results) {
+      const d = document.createElement("div");
+      d.className = x.ok ? "" : "crit";
+      d.textContent = (x.ok ? "\u2713 " : "\u2717 ") + url + " \u2192 " + x.target + (x.code && x.code !== "000" ? " (HTTP " + x.code + ")" : "") + (x.ok ? "" : "  " + x.error);
+      box.appendChild(d);
+    }
+  }
+  $("msg").textContent = "";
+  $("test").disabled = false;
+};
+
+$("save").onclick = async () => {
+  $("msg").textContent = "Saving\u2026";
+  const r = await api("/api/network/proxy", { method: "POST", headers: JSON_H, body: JSON.stringify(values()) });
+  $("msg").textContent = r.ok ? "Saved. apt and new logins use these settings now." : await errText(r);
+  if (r.ok) load();
+};
+
+load();
+</script>

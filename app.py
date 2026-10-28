@@ -2,6 +2,8 @@ import psutil
 from fastapi import Depends, FastAPI
 from fastapi.staticfiles import StaticFiles
 from auth import router as auth_router, current_user
+from security import router as security_router
+from journal import router as journal_router
 from fs import router as fs_router
 from system import router as system_router
 from units import router as units_router
@@ -26,6 +28,8 @@ class NoCacheStatic(StaticFiles):
         return r
 
 app.include_router(auth_router)
+app.include_router(security_router)
+app.include_router(journal_router)
 app.include_router(fs_router)
 app.include_router(system_router)
 app.include_router(units_router)

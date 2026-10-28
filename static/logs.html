@@ -1,0 +1,152 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Logs</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/shell.js" defer></script>
+<style>
+  .filters label { margin-right: 4px; }
+  #jbox { height: calc(100vh - 330px); min-height: 320px; overflow: auto; background: #121417;
+          border: 1px solid var(--line); border-radius: 8px; font: 13px/1.5 var(--mono); }
+  .jr { display: grid; grid-template-columns: 150px 190px 1fr; gap: 12px; padding: 2px 12px; border-left: 3px solid transparent; }
+  .jr:hover { background: rgba(255, 255, 255, .04); }
+  .jr .t, .jr .u { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .jr .m { white-space: pre-wrap; word-break: break-word; }
+  .jr.p0, .jr.p1, .jr.p2, .jr.p3 { border-left-color: var(--crit); }
+  .jr.p0 .m, .jr.p1 .m, .jr.p2 .m, .jr.p3 .m { color: #ffb4ad; }
+  .jr.p4 { border-left-color: var(--warn); }
+  .jr.p4 .m { color: #f8dc94; }
+  .jr.p5 { border-left-color: var(--accent); }
+  .jr.p7 .m { color: var(--muted); }
+  #jstatus { margin: 8px 2px; font-size: 13px; }
+  @media (max-width: 900px) { .jr { grid-template-columns: 1fr; gap: 0; } }
+</style>
+
+<h1>Logs</h1>
+<p class="muted">The system journal. Newest entries are at the bottom.</p>
+
+<div class="filters" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0">
+  <select id="rng" title="Time range">
+    <option value="1h">Last hour</option>
+    <option value="6h">Last 6 hours</option>
+    <option value="24h">Last 24 hours</option>
+    <option value="7d">Last 7 days</option>
+    <option value="boot" selected>Current boot</option>
+    <option value="prevboot">Previous boot</option>
+    <option value="all">Everything</option>
+  </select>
+  <select id="prio" title="Severity">
+    <option value="-1">All severities</option>
+    <option value="3">Errors and worse</option>
+    <option value="4">Warnings and worse</option>
+    <option value="5">Notices and worse</option>
+    <option value="6">Info and worse</option>
+  </select>
+  <input id="unit" type="text" list="unitlist" placeholder="Unit, or kernel" autocomplete="off" style="width:210px">
+  <datalist id="unitlist"><option value="kernel"></option></datalist>
+  <input id="q" type="text" placeholder="Search text" autocomplete="off" style="width:200px">
+  <select id="lines" title="How many lines">
+    <option>100</option><option selected>200</option><option>500</option><option>1000</option>
+  </select>
+  <button id="go" class="primary">Search</button>
+  <label><input type="checkbox" id="follow"> Follow</label>
+  <button id="dl">Download</button>
+</div>
+
+<div id="jbox"></div>
+<div id="jstatus" class="muted"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const Q = (o) => new URLSearchParams(o).toString();
+const J = { cursor: "", entries: [] };
+const PRIO = ["Emergency", "Alert", "Critical", "Error", "Warning", "Notice", "Info", "Debug"];
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) { location.href = "/login.html"; throw new Error("not logged in"); }
+  return r;
+}
+async function errText(r) {
+  try { const j = await r.json(); if (typeof j.detail === "string") return j.detail; } catch (e) {}
+  return "Request failed (" + r.status + ")";
+}
+const fmtT = (ms) => new Date(ms).toLocaleString([], { month: "short", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+
+function params(extra) {
+  return Q({ lines: $("lines").value, rng: $("rng").value, priority: $("prio").value,
+             unit: $("unit").value.trim(), q: $("q").value.trim(), ...(extra || {}) });
+}
+
+function addRows(list) {
+  const box = $("jbox");
+  const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  const frag = document.createDocumentFragment();
+  for (const e of list) {
+    const d = document.createElement("div");
+    d.className = "jr p" + e.p;
+    d.title = PRIO[e.p];
+    const t = document.createElement("span"); t.className = "t"; t.textContent = fmtT(e.t);
+    const u = document.createElement("span"); u.className = "u"; u.textContent = e.u; u.title = e.u;
+    const m = document.createElement("span"); m.className = "m"; m.textContent = e.m;
+    d.append(t, u, m);
+    frag.appendChild(d);
+  }
+  box.appendChild(frag);
+  while (box.childElementCount > 3000) box.firstElementChild.remove();
+  J.entries.push(...list);
+  if (J.entries.length > 3000) J.entries.splice(0, J.entries.length - 3000);
+  if (stick) box.scrollTop = box.scrollHeight;
+  $("jstatus").textContent = box.childElementCount + " entries shown";
+}
+
+async function load() {
+  $("jstatus").textContent = "Loading\u2026";
+  let r;
+  try { r = await api("/api/journal?" + params()); } catch (e) { return; }
+  if (!r.ok) { $("jstatus").textContent = await errText(r); return; }
+  const d = await r.json();
+  $("jbox").replaceChildren();
+  J.entries = []; J.cursor = d.cursor || "";
+  addRows(d.entries);
+  $("jbox").scrollTop = $("jbox").scrollHeight;
+  if (!d.entries.length) $("jstatus").textContent = "No entries match these filters.";
+}
+
+async function poll() {
+  if (!$("follow").checked || document.hidden) return;
+  if (!J.cursor) { load(); return; }
+  const r = await api("/api/journal?" + params({ after: J.cursor, lines: "500" }));
+  if (!r.ok) return;
+  const d = await r.json();
+  if (d.entries.length) { addRows(d.entries); J.cursor = d.cursor || J.cursor; }
+}
+
+$("go").onclick = load;
+$("q").addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
+$("unit").addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
+for (const id of ["rng", "prio", "lines"]) $(id).onchange = load;
+$("dl").onclick = () => {
+  const text = J.entries.map((e) => `${new Date(e.t).toISOString()} ${e.u}: ${e.m}`).join("\n") + "\n";
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+  a.download = "journal.txt";
+  document.body.appendChild(a); a.click(); a.remove();
+};
+setInterval(poll, 2000);
+
+(async () => {
+  try {
+    const r = await fetch("/api/units");
+    if (r.ok) {
+      const dl = $("unitlist");
+      for (const u of await r.json()) {
+        if (u.type !== "service") continue;
+        const o = document.createElement("option"); o.value = u.name; dl.appendChild(o);
+      }
+    }
+  } catch (e) {}
+  load();
+})();
+</script>

@@ -32,6 +32,9 @@ class PersistentDict:
         key = str(key)
         return hashlib.sha256(key.encode()).hexdigest() if self.hash_keys else key
 
+    def stored_key(self, key):
+        return self._k(key)
+
     def get(self, key, default=None):
         if key is None:
             return default
@@ -41,6 +44,14 @@ class PersistentDict:
                 (self.ns, self._k(key), time.time()),
             ).fetchone()
         return json.loads(row[0]) if row else default
+
+    def items(self):
+        with _lock:
+            rows = _conn.execute(
+                "SELECT k, v FROM kv WHERE ns=? AND (exp IS NULL OR exp>?)",
+                (self.ns, time.time()),
+            ).fetchall()
+        return [(k, json.loads(v)) for k, v in rows]
 
     def __setitem__(self, key, value):
         exp = self.expires_at(value) if self.expires_at else None
@@ -62,6 +73,11 @@ class PersistentDict:
             _conn.execute("DELETE FROM kv WHERE ns=? AND k=?", (self.ns, self._k(key)))
             _conn.commit()
         return json.loads(row[0]) if row else default
+
+    def delete_raw(self, stored):
+        with _lock:
+            _conn.execute("DELETE FROM kv WHERE ns=? AND k=?", (self.ns, stored))
+            _conn.commit()
 
     def __delitem__(self, key):
         self.pop(key)
