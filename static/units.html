@@ -2,41 +2,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Services</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 2rem; background: #1b1b1d; color: #eee; }
-  a { color: #7ab7ff; }
-  .muted { color: #888; }
-  .crit { color: #f87171; font-weight: 600; }
-  .warn { color: #fbbf24; }
-  .addr { white-space: pre-line; }
-  .top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin: 10px 0 18px; }
-  .seg { display: inline-flex; background: #101012; border-radius: 6px; padding: 4px; gap: 2px; }
-  .seg button { background: none; border: 0; color: #ddd; padding: 8px 16px; border-radius: 5px; cursor: pointer; font: inherit; }
-  .seg button.on { background: #2e2e32; color: #fff; }
-  .seg.side button { border: 1px solid #555; border-radius: 0; background: #1b1b1d; }
-  .seg.side button.on { background: #7ab7ff; color: #06223f; border-color: #7ab7ff; }
-  .seg button:disabled { color: #666; cursor: not-allowed; }
-  .filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
-  input[type=text], select { padding: 9px 10px; background: #1b1b1d; color: #eee; border: 1px solid #555; border-radius: 4px; font: inherit; }
-  #q { min-width: 260px; }
-  table { border-collapse: collapse; width: 100%; }
-  th { text-align: left; color: #aaa; font-weight: 600; }
-  td, th { padding: 14px 12px; border-top: 1px solid #333; vertical-align: top; }
-  td:first-child { white-space: nowrap; }
-  .pill { display: inline-block; padding: 2px 14px; border-radius: 999px; font-size: 12px; font-weight: 600; }
-  .pill.on { background: #7ab7ff; color: #06223f; }
-  .pill.off { background: #3a3a3f; color: #ddd; }
-  .pill.bad { background: #7f1d1d; color: #fecaca; }
-  button.act { margin-right: 6px; padding: 7px 14px; cursor: pointer; background: #2a2a2a; color: #eee;
-               border: 1px solid #555; border-radius: 4px; font: inherit; }
-  button.act:disabled { color: #777; cursor: not-allowed; }
-  pre { background: #000; color: #ddd; padding: 10px; font-size: 13px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
-  #logbox { height: 340px; }
-  #dstatus { max-height: 260px; }
-  .props td:first-child { color: #aaa; width: 190px; }
-  .props td { border-top: 1px solid #2a2a2a; padding: 8px 12px; }
-</style>
-
+<link rel="stylesheet" href="/app.css">
+<script src="/shell.js" defer></script>
 <p><a href="/">&larr; Back</a></p>
 
 <div id="listview">

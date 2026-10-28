@@ -1,36 +1,49 @@
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Login</title>
-<style>
-  body { font-family: system-ui, sans-serif; display: grid; place-items: center; height: 100vh; margin: 0; background: #111; color: #eee; }
-  form { display: grid; gap: 10px; width: 280px; }
-  input, button { padding: 10px; font-size: 16px; border-radius: 6px; border: 1px solid #444; background: #222; color: #eee; }
-  button { background: #3b82f6; border: 0; cursor: pointer; }
-  #err { color: #f87171; min-height: 1.2em; margin: 0; }
-</style>
-<form id="f">
-  <h1>Admin login</h1>
-  <input id="u" placeholder="Username" autocomplete="username" required>
-  <input id="p" type="password" placeholder="Password" autocomplete="current-password" required>
-  <input id="c" placeholder="6-digit code" inputmode="numeric"
-       autocomplete="one-time-code" maxlength="7">
-  <button>Log in</button>
-  <p id="err"></p>
-</form>
+<title>Sign in</title>
+<link rel="stylesheet" href="/app.css">
+<body class="login">
+<main class="login-card">
+  <h1>Admin Panel</h1>
+  <p class="muted">Sign in to manage this server</p>
+  <form id="f">
+    <label>Username
+      <input id="u" autocomplete="username" required autofocus>
+    </label>
+    <label>Password
+      <input id="p" type="password" autocomplete="current-password" required>
+    </label>
+    <label>Authentication code
+      <input id="c" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="6 digits">
+    </label>
+    <button class="primary" id="go">Sign in</button>
+    <p id="err" class="crit" role="alert"></p>
+  </form>
+</main>
 <script>
 document.getElementById("f").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const r = await fetch("/api/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      username: document.getElementById("u").value,
-      password: document.getElementById("p").value,
-      code: document.getElementById("c").value,
-    }),
-  });
-  if (r.ok) location.href = "/";
-  else document.getElementById("err").textContent = (await r.json()).detail;
+  const go = document.getElementById("go"), err = document.getElementById("err");
+  go.disabled = true;
+  err.textContent = "";
+  try {
+    const r = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: document.getElementById("u").value,
+        password: document.getElementById("p").value,
+        code: document.getElementById("c").value,
+      }),
+    });
+    if (r.ok) { location.href = "/"; return; }
+    let msg = "Sign-in failed";
+    try { const j = await r.json(); if (typeof j.detail === "string") msg = j.detail; } catch (x) {}
+    err.textContent = msg;
+  } catch (x) {
+    err.textContent = "Could not reach the server";
+  }
+  go.disabled = false;
 });
 </script>

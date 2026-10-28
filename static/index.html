@@ -1,54 +1,171 @@
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Admin Panel</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 2rem; background: #111; color: #eee; }
-  table { border-collapse: collapse; margin-top: 1rem; }
-  td, th { padding: 6px 14px; border-bottom: 1px solid #333; text-align: left; }
-  button { margin-right: 6px; padding: 4px 10px; cursor: pointer; }
-  #logbox {
-    height: 300px; overflow: auto; background: #000; color: #ddd;
-    padding: 8px; font-size: 13px; white-space: pre-wrap; word-break: break-all;
-  }
-  a { color: #7ab7ff; }
-</style>
+<title>Overview</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/shell.js" defer></script>
 
-<h1>Server status</h1>
-<button onclick="logout()">Log out</button> <a href="/units.html">All services</a> <a href="/updates.html">System updates</a> <a href="/firewall.html">Firewall</a> <a href="/users.html">Users</a> <a href="/terminal.html">Terminal</a> <a href="/storage.html">Storage</a> <a href="/files.html">Files</a> <a href="/network.html">Network</a>
-<pre id="out">loading…</pre>
+<h1>Overview</h1>
+<p id="subtitle" class="muted">loading…</p>
+
+<div class="cards">
+  <div class="card">
+    <h3>CPU</h3>
+    <div class="big" id="cpu">–</div>
+    <div class="bar" id="cpubar"><i></i></div>
+    <canvas id="cpuspark" width="300" height="44"></canvas>
+    <div class="muted" id="cpuinfo"></div>
+  </div>
+  <div class="card">
+    <h3>Memory</h3>
+    <div class="big" id="mem">–</div>
+    <div class="bar" id="membar"><i></i></div>
+    <canvas id="memspark" width="300" height="44"></canvas>
+    <div class="muted" id="meminfo"></div>
+  </div>
+  <div class="card">
+    <h3>Disk (/)</h3>
+    <div class="big" id="disk">–</div>
+    <div class="bar" id="diskbar"><i></i></div>
+    <div class="muted" id="diskinfo"></div>
+    <div class="muted"><a href="/storage.html">Storage details</a></div>
+  </div>
+  <div class="card">
+    <h3>Network</h3>
+    <div class="big" id="net">–</div>
+    <canvas id="netspark" width="300" height="44"></canvas>
+    <div class="muted" id="netinfo"></div>
+  </div>
+</div>
+
+<h2>System information</h2>
+<table class="kv"><tbody id="sysinfo"></tbody></table>
 
 <h2>Services</h2>
 <table>
-  <thead>
-    <tr><th>Name</th><th>State</th><th>Description</th><th>Actions</th></tr>
-  </thead>
+  <thead><tr><th>Name</th><th>State</th><th>Description</th><th>Actions</th></tr></thead>
   <tbody id="svc"></tbody>
 </table>
+<p class="muted"><a href="/units.html">All services</a></p>
 
-<h2>Logs <span id="logname"></span></h2>
-<button onclick="stopLogs()">Stop</button>
+<h2>Service logs <span id="logname" class="muted"></span></h2>
+<p><button id="logstop">Stop</button></p>
 <pre id="logbox"></pre>
 
 <script>
+const $ = (id) => document.getElementById(id);
+
 async function api(path, opts) {
   const r = await fetch(path, opts);
-  if (r.status === 401) {
-    location.href = "/login.html";
-    throw new Error("not logged in");
-  }
+  if (r.status === 401) { location.href = "/login.html"; throw new Error("not logged in"); }
   return r;
 }
 
-async function tick() {
-  const s = await (await api("/api/stats")).json();
-  document.getElementById("out").textContent =
-    `CPU:  ${s.cpu}%\nRAM:  ${s.mem}%\nDisk: ${s.disk}%`;
+function fmtBytes(n) {
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(1) : Math.round(n)) + " " + u[i];
+}
+function fmtUptime(s) {
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  return (d ? d + " d " : "") + (h ? h + " h " : "") + m + " min";
 }
 
+/* ---------------- live cards ---------------- */
+const H = { cpu: [], mem: [], rx: [], tx: [] };
+let prev = null;
+const push = (a, v) => { a.push(v); if (a.length > 60) a.shift(); };
+
+function setBar(id, pct) {
+  const bar = $(id);
+  bar.firstElementChild.style.width = Math.min(100, pct) + "%";
+  bar.classList.toggle("warn", pct >= 85 && pct < 95);
+  bar.classList.toggle("crit", pct >= 95);
+}
+
+function spark(cv, series, colors, max) {
+  const ctx = cv.getContext("2d"), w = cv.width, h = cv.height;
+  ctx.clearRect(0, 0, w, h);
+  const top = max || Math.max(1, ...series.flat());
+  series.forEach((arr, k) => {
+    ctx.beginPath();
+    ctx.strokeStyle = colors[k];
+    ctx.lineWidth = 2;
+    arr.forEach((v, i) => {
+      const x = arr.length < 2 ? 0 : (i / (arr.length - 1)) * (w - 1);
+      const y = h - 2 - (v / top) * (h - 4);
+      if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    });
+    ctx.stroke();
+  });
+}
+
+async function tick() {
+  const r = await api("/api/system");
+  if (!r.ok) return;
+  const d = await r.json();
+
+  $("subtitle").textContent = d.os + "  \u00b7  up " + fmtUptime(d.uptime);
+
+  push(H.cpu, d.cpu_percent);
+  $("cpu").textContent = d.cpu_percent.toFixed(0) + "%";
+  setBar("cpubar", d.cpu_percent);
+  spark($("cpuspark"), [H.cpu], ["#73bcf7"], 100);
+  $("cpuinfo").textContent = d.cpu_cores + " cores \u00b7 load " + d.load.map((x) => x.toFixed(2)).join(", ");
+
+  push(H.mem, d.mem.percent);
+  $("mem").textContent = d.mem.percent.toFixed(0) + "%";
+  setBar("membar", d.mem.percent);
+  spark($("memspark"), [H.mem], ["#73bcf7"], 100);
+  $("meminfo").textContent = fmtBytes(d.mem.used) + " of " + fmtBytes(d.mem.total) +
+    (d.swap.total ? " \u00b7 swap " + fmtBytes(d.swap.used) : "");
+
+  $("disk").textContent = d.disk.percent.toFixed(0) + "%";
+  setBar("diskbar", d.disk.percent);
+  $("diskinfo").textContent = fmtBytes(d.disk.used) + " of " + fmtBytes(d.disk.total);
+
+  let rrx = 0, rtx = 0;
+  if (prev && d.time > prev.time) {
+    const dt = d.time - prev.time;
+    rrx = Math.max(0, (d.net.rx - prev.rx) / dt);
+    rtx = Math.max(0, (d.net.tx - prev.tx) / dt);
+    push(H.rx, rrx); push(H.tx, rtx);
+  }
+  prev = { rx: d.net.rx, tx: d.net.tx, time: d.time };
+  $("net").textContent = "\u2193 " + fmtBytes(rrx) + "/s";
+  spark($("netspark"), [H.rx, H.tx], ["#7fd47a", "#73bcf7"]);
+  $("netinfo").textContent = "\u2191 " + fmtBytes(rtx) + "/s \u00b7 total \u2193 " + fmtBytes(d.net.rx) + " \u2191 " + fmtBytes(d.net.tx);
+
+  const rows = [
+    ["Hostname", d.hostname],
+    ["Operating system", d.os],
+    ["Kernel", d.kernel + " (" + d.arch + ")"],
+    ["Processor", (d.cpu_model || "unknown") + " \u00d7 " + d.cpu_cores],
+    ["Load average", d.load.map((x) => x.toFixed(2)).join(", ") + "   (1, 5, 15 min)"],
+    ["Uptime", fmtUptime(d.uptime)],
+    ["Server time", d.server_time],
+    ["IP addresses", d.ips.map((i) => i.addr + "  (" + i.iface + ")").join("\n") || "none"],
+    ["Logged-in users", String(d.users)],
+  ];
+  if (d.reboot_required) rows.push(["Reboot", "A reboot is required to finish updates"]);
+  const body = $("sysinfo");
+  body.replaceChildren();
+  for (const [k, v] of rows) {
+    const tr = document.createElement("tr");
+    const a = document.createElement("td"); a.textContent = k;
+    const b = document.createElement("td"); b.textContent = v; b.className = "addr";
+    if (k === "Reboot") b.classList.add("warn");
+    tr.append(a, b);
+    body.appendChild(tr);
+  }
+}
+
+/* ---------------- quick services and live logs ---------------- */
 async function loadServices() {
-  const rows = await (await api("/api/services")).json();
-  const body = document.getElementById("svc");
+  const r = await api("/api/services");
+  if (!r.ok) return;
+  const rows = await r.json();
+  const body = $("svc");
   body.replaceChildren();
   for (const s of rows) {
     const tr = document.createElement("tr");
@@ -78,48 +195,35 @@ async function loadServices() {
 async function act(name, action) {
   if (!confirm(`${action} ${name}?`)) return;
   const r = await api(`/api/services/${name}/${action}`, { method: "POST" });
-  if (!r.ok) alert((await r.json()).detail);
+  if (!r.ok) { try { alert((await r.json()).detail); } catch (e) { alert("Request failed"); } }
   loadServices();
 }
 
 let ws = null;
-
 function stopLogs() {
-  if (ws) {
-    ws.onclose = null;
-    ws.close();
-    ws = null;
-  }
+  if (ws) { ws.onclose = null; ws.close(); ws = null; }
 }
-
 function showLogs(name) {
   stopLogs();
-  const box = document.getElementById("logbox");
+  const box = $("logbox");
   box.textContent = "";
-  document.getElementById("logname").textContent = "— " + name;
+  $("logname").textContent = "\u2014 " + name;
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   ws = new WebSocket(`${proto}//${location.host}/api/logs/${name}`);
   ws.onmessage = (e) => {
     const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
     box.textContent += e.data + "\n";
-    if (box.textContent.length > 200000)
-      box.textContent = box.textContent.slice(-100000);
+    if (box.textContent.length > 200000) box.textContent = box.textContent.slice(-100000);
     if (stick) box.scrollTop = box.scrollHeight;
   };
   ws.onclose = () => {
-    if (!box.textContent)
-      box.textContent = "(no data: not logged in, or connection closed)";
+    if (!box.textContent) box.textContent = "(no data: not logged in, or connection closed)";
   };
 }
-
-async function logout() {
-  stopLogs();
-  await fetch("/api/logout", { method: "POST" });
-  location.href = "/login.html";
-}
+$("logstop").onclick = stopLogs;
 
 tick();
 loadServices();
-setInterval(tick, 2000);
-setInterval(loadServices, 5000);
+setInterval(() => { if (!document.hidden) tick(); }, 2000);
+setInterval(() => { if (!document.hidden) loadServices(); }, 5000);
 </script>
