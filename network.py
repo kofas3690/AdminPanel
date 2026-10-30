@@ -220,3 +220,42 @@ def proxy_test(body: ProxyTest, user: str = Depends(current_user)):
         except subprocess.TimeoutExpired:
             results.append({"target": label, "ok": False, "code": "", "error": "timed out"})
     return {"results": results}
+
+
+# ---------------- peer config generator ----------------
+
+from fastapi.responses import JSONResponse
+
+
+class PeerBody(BaseModel):
+    name: str = Field(pattern=r"^[a-z][a-z0-9_.-]{0,14}$")
+    key_id: str = Field(pattern=r"^[0-9a-f]{8}$")
+    address: str = Field(max_length=64)
+    allowed: list[str] = Field(min_length=1, max_length=16)
+    dns: list[str] = Field(default_factory=list, max_length=4)
+    endpoint: str = Field(max_length=300)
+    keepalive: int | None = Field(default=25, ge=0, le=65535)
+    psk: bool = True
+
+
+def qr_rows(text):
+    try:
+        import qrcode
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L, border=0)
+        qr.add_data(text)
+        qr.make(fit=True)
+        return ["".join("1" if c else "0" for c in row) for row in qr.get_matrix()]
+    except Exception:
+        return None
+
+
+@router.post("/wg/peer")
+def wg_peer(body: PeerBody, request: Request, user: str = Depends(current_user)):
+    r = run("wg-peer", stdin=json.dumps(body.model_dump()))
+    # never log the config: it contains the device's private key
+    audit(user, request.client.host, "wg_peer_generated", name=body.name,
+          address=body.address, ok=(r.returncode == 0))
+    must(r)
+    d = json.loads(r.stdout)
+    d["qr"] = qr_rows(d["conf"])
+    return JSONResponse(d, headers={"Cache-Control": "no-store"})

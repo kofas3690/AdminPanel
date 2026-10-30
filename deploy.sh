@@ -3,7 +3,7 @@ set -eu
 SRC="$HOME/adminpanel/"
 DST=/opt/adminpanel/
 
-if pgrep -x apt-get >/dev/null || pgrep -x dpkg >/dev/null; then
+if pgrep -x apt-get >/dev/null || pgrep -x dpkg >/dev/null || pgrep -f "adminpanel-disk apply" >/dev/null; then
   echo "apt/dpkg is running; not deploying now." >&2
   exit 1
 fi

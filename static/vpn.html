@@ -11,8 +11,13 @@
   .vcard table { margin: 8px 0 0; }
   #form { max-width: 760px; }
   code { background: #121417; padding: 2px 6px; border-radius: 4px; font-size: 12px; word-break: break-all; }
-  dialog input, dialog textarea { width: 100%; }
-  dialog textarea { height: 220px; font: 13px var(--mono); }
+  dialog input[type=text], dialog input[type=password], dialog textarea, dialog select { width: 100%; }
+  dialog label { display: block; margin: 10px 0; }
+  dialog textarea { height: 200px; font: 13px var(--mono); }
+  #pNetworks { height: 70px; }
+  #pqr { background: #fff; max-width: 100%; image-rendering: pixelated; display: block; margin: 8px 0; }
+  #pconf { max-height: 220px; }
+  .tag { display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: 12px; background: #3a3f46; margin-right: 4px; }
 </style>
 
 <h1>VPN</h1>
@@ -38,7 +43,7 @@
   <button id="importvpn">Import a client config\u2026</button>
 </p>
 <table>
-  <thead><tr><th>Name</th><th>Addresses</th><th>Listen port</th><th>Peers</th><th></th></tr></thead>
+  <thead><tr><th>Name</th><th>Addresses</th><th>Listen port</th><th>Peers</th><th>Mode</th><th></th></tr></thead>
   <tbody id="items"></tbody>
 </table>
 
@@ -67,6 +72,38 @@
   <p><button id="impbtn" class="primary">Import</button><button id="impcancel">Cancel</button> <span id="imperr" class="crit"></span></p>
 </dialog>
 
+<dialog id="peerdlg" style="width:min(700px,94vw)">
+  <h3 style="margin-top:0">Generate a peer config</h3>
+  <div id="pform">
+    <p class="muted">Creates a key pair for a new device and adds the device as a peer of this interface. Its config is shown once. The device's private key is not stored on the server.</p>
+    <label>Device address (a single address inside this VPN)
+      <input id="pAddress" type="text" placeholder="10.8.0.2/32" autocomplete="off"></label>
+    <label>The device should reach
+      <select id="pReach">
+        <option value="subnet">Only the VPN network</option>
+        <option value="custom">The VPN network and these networks</option>
+        <option value="all">Everything (all its internet traffic goes through this server)</option>
+      </select></label>
+    <label id="pNetLabel" hidden>Networks (comma-separated)
+      <textarea id="pNetworks" placeholder="192.168.1.0/24, 10.20.0.0/16"></textarea></label>
+    <label>DNS servers for the device (optional)
+      <input id="pDns" type="text" placeholder="1.1.1.1" autocomplete="off"></label>
+    <label>This server's public address and port, as the device will reach it
+      <input id="pEndpoint" type="text" placeholder="vpn.example.com:51820" autocomplete="off"></label>
+    <label>Keepalive in seconds <input id="pKeep" type="text" value="25" autocomplete="off"></label>
+    <label><input type="checkbox" id="pPsk" checked> Add a preshared key (extra protection)</label>
+    <p><button id="pgen" class="primary">Generate</button><button id="pcancel">Cancel</button> <span id="perr" class="crit"></span></p>
+  </div>
+  <div id="presult" hidden>
+    <p class="warn"><strong>Shown once.</strong> Scan the code or save the file now. Closing this window wipes it from the page, and the server does not keep the device's private key.</p>
+    <p id="pnote" class="warn"></p>
+    <canvas id="pqr"></canvas>
+    <pre id="pconf"></pre>
+    <p><button id="pcopy">Copy</button><button id="pdl">Download .conf</button><button id="pdone" class="primary">Done</button></p>
+    <p class="muted">The device is now listed as a peer in the form. Remember to Save to draft, then Apply.</p>
+  </div>
+</dialog>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -87,7 +124,7 @@ async function errText(r) {
 function cell(tr, text, cls) { const td = document.createElement("td"); td.textContent = text; if (cls) td.className = cls; tr.appendChild(td); return td; }
 function btn(text, fn, cls) { const b = document.createElement("button"); b.type = "button"; b.textContent = text; b.onclick = fn; if (cls) b.className = cls; return b; }
 function fmtBytes(n) { const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; } return (i ? n.toFixed(1) : Math.round(n)) + " " + u[i]; }
-async function copy(t) { try { await navigator.clipboard.writeText(t); } catch (e) { prompt("Copy this key:", t); } }
+async function copy(t) { try { await navigator.clipboard.writeText(t); } catch (e) { prompt("Copy this:", t); } }
 
 let applied = {}, draft = {}, wginfo = { available: true, public: {} }, PUB = {}, F = null, pendLeft = null;
 const isDirty = () => JSON.stringify(draft) !== JSON.stringify(applied);
@@ -146,6 +183,12 @@ function renderItems() {
   for (const n of names) {
     const it = draft[n], tr = document.createElement("tr");
     cell(tr, n); cell(tr, it.addresses.join("\n"), "addr"); cell(tr, it.listen_port || "automatic"); cell(tr, String(it.peers.length));
+    const mode = cell(tr, "");
+    const g = it.gateway || {};
+    const tags = [];
+    if (g.forward) tags.push(g.nat ? "gateway + NAT" : "gateway");
+    if (it.peers.some((p) => p.full_tunnel)) tags.push("full tunnel");
+    for (const t of tags) { const s = document.createElement("span"); s.className = "tag"; s.textContent = t; mode.appendChild(s); }
     const act = document.createElement("td");
     act.append(btn("Edit", () => openForm(n)),
       btn("Remove", () => {
@@ -164,7 +207,9 @@ function labelled(parent, text, el) { const l = document.createElement("label");
 function openForm(name) {
   const editing = name !== null;
   F = { name: editing ? name : "", editing,
-        item: editing ? clone(draft[name]) : { key_id: "", listen_port: null, addresses: [], dns: [], mtu: null, peers: [] } };
+        item: editing ? clone(draft[name])
+          : { key_id: "", listen_port: null, addresses: [], dns: [], mtu: null, peers: [],
+              gateway: { forward: false, nat: false, forward_in: false }, bypass: [] } };
   renderForm();
 }
 
@@ -186,6 +231,12 @@ function peerCard(p, i) {
   e.endpoint = labelled(card, "Endpoint (host:port; leave empty if the peer connects to you)", mkInput(p.endpoint, "vpn.example.com:51820"));
   e.allowed = labelled(card, "Allowed IPs (networks reachable through this peer, comma-separated)", mkInput((p.allowed_ips || []).join(", "), "10.8.0.1/32"));
   e.keepalive = labelled(card, "Keepalive in seconds (25 is typical behind NAT; empty = off)", mkInput(p.keepalive, "25"));
+  const sel = document.createElement("select");
+  for (const [v, text] of [["", "No"], ["ipv4", "Yes, IPv4"], ["both", "Yes, IPv4 and IPv6"]]) {
+    const o = document.createElement("option"); o.value = v; o.textContent = text; sel.appendChild(o);
+  }
+  sel.value = p.full_tunnel || "";
+  e.ft = labelled(card, "Send all of this server's traffic through this peer (full tunnel; needs an endpoint)", sel);
   return card;
 }
 
@@ -193,6 +244,8 @@ function renderForm() {
   const box = $("form");
   box.replaceChildren(); box.hidden = false;
   const it = F.item;
+  it.gateway = it.gateway || { forward: false, nat: false, forward_in: false };
+  it.bypass = it.bypass || [];
   F.els = { peers: [] };
   const h = document.createElement("h3"); h.textContent = (F.editing ? "Edit " : "Add ") + "VPN interface"; box.appendChild(h);
   F.els.name = labelled(box, "Interface name", mkInput(F.name, "wg0"));
@@ -215,11 +268,29 @@ function renderForm() {
   F.els.dns = labelled(box, "DNS servers (optional)", mkInput((it.dns || []).join(", "), ""));
   F.els.mtu = labelled(box, "MTU (optional; 1420 is typical)", mkInput(it.mtu, "1420"));
 
+  const gb = document.createElement("div"); gb.className = "vcard";
+  const gh = document.createElement("strong"); gh.textContent = "Gateway (this server routes for its VPN peers)"; gb.appendChild(gh);
+  const mk = (key, text) => {
+    const l = document.createElement("label"); const c = document.createElement("input"); c.type = "checkbox";
+    c.checked = !!it.gateway[key]; l.append(c, " " + text); gb.appendChild(l); return c;
+  };
+  F.els.gw = {
+    forward: mk("forward", "Let VPN peers reach other networks through this server (IPv4 forwarding)"),
+    nat: mk("nat", "Hide VPN peers behind this server's address (NAT)"),
+    forward_in: mk("forward_in", "Let other networks start connections to VPN peers"),
+  };
+  const gn = document.createElement("div"); gn.className = "muted";
+  gn.textContent = "Matching routed firewall rules are added for you. IPv4 only. With the firewall off, forwarding is not filtered.";
+  gb.appendChild(gn); box.appendChild(gb);
+  F.els.bypass = labelled(box, "Networks to keep reachable directly when a peer carries all traffic (comma-separated; your own address is added automatically)",
+    mkInput(it.bypass.join(", "), "203.0.113.0/24"));
+
   const ph = document.createElement("h3"); ph.textContent = "Peers"; box.appendChild(ph);
   it.peers.forEach((p, i) => box.appendChild(peerCard(p, i)));
   const bar = document.createElement("p");
   bar.append(
-    btn("Add peer", () => { syncForm(); F.item.peers.push({ label: "", public_key: "", psk_id: "", endpoint: "", allowed_ips: [], keepalive: 25 }); renderForm(); }),
+    btn("Add peer", () => { syncForm(); F.item.peers.push({ label: "", public_key: "", psk_id: "", endpoint: "", allowed_ips: [], keepalive: 25, full_tunnel: "" }); renderForm(); }),
+    btn("Generate a peer config\u2026", openPeerDlg),
     btn("Save to draft", saveForm, "primary"),
     btn("Cancel", () => { $("form").hidden = true; F = null; }));
   box.appendChild(bar);
@@ -233,10 +304,12 @@ function syncForm() {
   it.listen_port = num(e.port.value);
   it.dns = split(e.dns.value);
   it.mtu = num(e.mtu.value);
+  it.gateway = { forward: e.gw.forward.checked, nat: e.gw.nat.checked, forward_in: e.gw.forward_in.checked };
+  it.bypass = split(e.bypass.value);
   it.peers.forEach((p, i) => {
     const x = e.peers[i];
     p.label = x.label.value.trim(); p.public_key = x.pub.value.trim(); p.endpoint = x.endpoint.value.trim();
-    p.allowed_ips = split(x.allowed.value); p.keepalive = num(x.keepalive.value);
+    p.allowed_ips = split(x.allowed.value); p.keepalive = num(x.keepalive.value); p.full_tunnel = x.ft.value;
   });
 }
 
@@ -251,7 +324,10 @@ function saveForm() {
     if (Number.isNaN(v)) { alert("A number field contains text"); return; }
   }
   const wide = it.peers.flatMap((p) => p.allowed_ips).filter(broad);
-  if (wide.length) alert("These allowed IPs route (almost) everything through the tunnel, which isn't supported yet:\n\n" + wide.join(", ") + "\n\nUse specific networks instead. Apply will refuse them.");
+  if (wide.length) { alert("These allowed IPs are too broad to list here:\n\n" + wide.join(", ") + "\n\nTo send all traffic through a peer, use its full-tunnel option instead. Otherwise list specific networks."); return; }
+  if (it.peers.some((p) => p.full_tunnel && !p.endpoint)) { alert("A full-tunnel peer needs an endpoint (host:port)."); return; }
+  if (it.peers.some((p) => p.full_tunnel) &&
+      !confirm("A full tunnel sends ALL of this server's traffic through the VPN.\n\nIf the VPN or the peer is unreachable, this server loses internet access. Your current address and the networks this server is directly connected to stay reachable, and the change reverts by itself unless you keep it.\n\nContinue?")) return;
   draft[F.name] = clone(it);
   $("form").hidden = true; F = null; renderItems();
 }
@@ -299,6 +375,95 @@ async function importPsk(i) {
   if (d) { F.item.peers[i].psk_id = d.id; renderForm(); }
 }
 
+/* ---------------- peer config generator ---------------- */
+function netOf(cidr) {
+  const [ip, lenS] = cidr.split("/"), len = Number(lenS);
+  const n = ip.split(".").reduce((a, b) => a * 256 + Number(b), 0);
+  const mask = len === 0 ? 0 : (0xFFFFFFFF << (32 - len)) >>> 0;
+  const net = (n & mask) >>> 0;
+  return [net >>> 24, (net >>> 16) & 255, (net >>> 8) & 255, net & 255].join(".") + "/" + len;
+}
+const v4Base = () => (F.item.addresses || []).find((a) => /^\d+\.\d+\.\d+\.\d+\/\d+$/.test(a)) || "";
+function nextAddress() {
+  const base = v4Base();
+  if (!base) return "";
+  const ip = base.split("/")[0], o = ip.split(".");
+  const taken = new Set([ip]);
+  for (const p of F.item.peers) for (const a of p.allowed_ips || []) { const m = a.match(/^(\d+\.\d+\.\d+\.\d+)\/32$/); if (m) taken.add(m[1]); }
+  for (let i = 2; i < 255; i++) { const c = o[0] + "." + o[1] + "." + o[2] + "." + i; if (!taken.has(c)) return c + "/32"; }
+  return "";
+}
+function openPeerDlg() {
+  syncForm();
+  if (!NAME_RE.test(F.name)) { alert("Enter the interface name first"); return; }
+  if (!F.item.key_id) { alert("Generate or import this interface's private key first"); return; }
+  if (!F.item.addresses.length) { alert("Enter this interface's address first, for example 10.8.0.1/24"); return; }
+  $("pAddress").value = nextAddress();
+  $("pReach").value = "subnet"; $("pNetLabel").hidden = true; $("pNetworks").value = ""; $("pDns").value = "";
+  let host = ""; try { host = localStorage.getItem("vpnHost") || ""; } catch (e) {}
+  $("pEndpoint").value = host ? host + ":" + (F.item.listen_port || 51820) : "";
+  $("pKeep").value = "25"; $("pPsk").checked = true;
+  $("perr").textContent = ""; $("presult").hidden = true; $("pform").hidden = false;
+  $("peerdlg").showModal();
+}
+$("pReach").onchange = () => { $("pNetLabel").hidden = $("pReach").value !== "custom"; };
+function drawQr(rows) {
+  const cv = $("pqr");
+  if (!rows) { cv.hidden = true; return; }
+  cv.hidden = false;
+  const scale = 5, border = 4, n = rows.length;
+  cv.width = cv.height = (n + border * 2) * scale;
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = "#000";
+  rows.forEach((row, y) => { for (let x = 0; x < n; x++) if (row[x] === "1") ctx.fillRect((x + border) * scale, (y + border) * scale, scale, scale); });
+}
+let peerConf = "";
+function wipePeer() {
+  peerConf = ""; $("pconf").textContent = "";
+  const cv = $("pqr"); cv.getContext("2d").clearRect(0, 0, cv.width, cv.height); cv.width = cv.height = 1;
+  $("presult").hidden = true; $("pform").hidden = false;
+}
+$("peerdlg").addEventListener("close", wipePeer);
+$("pcancel").onclick = () => $("peerdlg").close();
+$("pdone").onclick = () => $("peerdlg").close();
+$("pcopy").onclick = () => copy(peerConf);
+$("pdl").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([peerConf], { type: "text/plain" }));
+  a.download = (F && F.name ? F.name : "wg") + "-client.conf";
+  document.body.appendChild(a); a.click(); a.remove();
+};
+$("pgen").onclick = async () => {
+  syncForm();
+  $("perr").textContent = "";
+  const reach = $("pReach").value, base = v4Base();
+  let allowed;
+  if (reach === "all") allowed = ["0.0.0.0/0", "::/0"];
+  else if (reach === "subnet") allowed = base ? [netOf(base)] : [];
+  else allowed = [...(base ? [netOf(base)] : []), ...split($("pNetworks").value)];
+  const ka = $("pKeep").value.trim();
+  const body = { name: F.name, key_id: F.item.key_id, address: $("pAddress").value.trim(), allowed,
+    dns: split($("pDns").value), endpoint: $("pEndpoint").value.trim(),
+    keepalive: ka === "" ? null : Number(ka), psk: $("pPsk").checked };
+  $("pgen").disabled = true;
+  const r = await api("/api/network/wg/peer", { method: "POST", headers: JSON_H, body: JSON.stringify(body) });
+  $("pgen").disabled = false;
+  if (!r.ok) { $("perr").textContent = await errText(r); return; }
+  const d = await r.json();
+  try { const host = body.endpoint.replace(/:\d+$/, ""); if (host) localStorage.setItem("vpnHost", host); } catch (e) {}
+  F.item.peers.push({ label: "device-" + (F.item.peers.length + 1), public_key: d.public_key, psk_id: d.psk_id,
+    endpoint: "", allowed_ips: [d.address], keepalive: null, full_tunnel: "" });
+  renderForm();
+  peerConf = d.conf;
+  $("pconf").textContent = d.conf;
+  drawQr(d.qr);
+  const g = F.item.gateway || {};
+  $("pnote").textContent = reach === "all" && !(g.forward && g.nat)
+    ? "This device sends all its traffic through the server, so turn on forwarding and NAT for this interface (Gateway section) before applying." : "";
+  $("pform").hidden = true; $("presult").hidden = false;
+};
+
 /* ---------------- importing a client config ---------------- */
 const IGNORED = ["postup", "postdown", "preup", "predown", "table", "fwmark", "saveconfig"];
 function parseConf(text) {
@@ -331,14 +496,18 @@ $("impbtn").onclick = async () => {
   PUB[k.id] = k.public;
   const item = { key_id: k.id, listen_port: c.iface.listenport ? Number(c.iface.listenport) : null,
     addresses: split(c.iface.address || ""), dns: split(c.iface.dns || "").filter((x) => /^[0-9a-fA-F:.]+$/.test(x)),
-    mtu: c.iface.mtu ? Number(c.iface.mtu) : null, peers: [] };
+    mtu: c.iface.mtu ? Number(c.iface.mtu) : null, peers: [],
+    gateway: { forward: false, nat: false, forward_in: false }, bypass: [] };
   let n = 0;
   for (const p of c.peers) {
     n++;
     let psk = "";
     if (p.presharedkey) { const d = await keyOp("import-psk", name, p.presharedkey); if (d) psk = d.id; }
+    const allowed = split(p.allowedips || "");
+    const full = allowed.some((a) => a === "0.0.0.0/0") ? (allowed.some((a) => a === "::/0") ? "both" : "ipv4") : "";
     item.peers.push({ label: "peer-" + n, public_key: p.publickey || "", psk_id: psk, endpoint: p.endpoint || "",
-      allowed_ips: split(p.allowedips || ""), keepalive: p.persistentkeepalive ? Number(p.persistentkeepalive) : null });
+      allowed_ips: allowed.filter((a) => a !== "0.0.0.0/0" && a !== "::/0"),
+      keepalive: p.persistentkeepalive ? Number(p.persistentkeepalive) : null, full_tunnel: full });
   }
   $("imptext").value = "";
   $("impbtn").disabled = false;
@@ -346,8 +515,7 @@ $("impbtn").onclick = async () => {
   F = { name, editing: false, item, els: null };
   renderForm();
   if (c.ignored.length) alert("These settings were ignored for safety: " + [...new Set(c.ignored)].join(", "));
-  const wide = item.peers.flatMap((p) => p.allowed_ips).filter(broad);
-  if (wide.length) alert("This config routes (almost) everything through the tunnel (" + wide.join(", ") + "). That isn't supported yet, so replace those entries with specific networks before applying.");
+  if (item.peers.some((p) => p.full_tunnel)) alert("This config sends all traffic through the tunnel, so it was imported as a full-tunnel peer. Check the direct networks list before you apply.");
 };
 
 /* ---------------- apply / keep / revert ---------------- */

@@ -4,96 +4,509 @@
 <title>Storage</title>
 <link rel="stylesheet" href="/app.css">
 <script src="/shell.js" defer></script>
-<p><a href="/">&larr; Back</a> &nbsp; <a href="/files.html">Files</a></p>
+<script src="/storage-extra.js" defer></script>
+<script src="/storage-extra2.js" defer></script>
+<style>
+  .vcard { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin: 14px 0; }
+  .vcard table { margin: 8px 0 10px; }
+  .lockbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 4px 0 14px; padding: 8px 14px;
+             background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  .lockbar .state { font-weight: 600; }
+  .lockbar .state.open { color: var(--warn); }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; max-width: 94vw; }
+  dialog::backdrop { background: rgba(0, 0, 0, .6); }
+  #opdlg { width: min(780px, 94vw); }
+  #opdlg label, #unlockdlg label { display: block; margin: 10px 0; }
+  #opdlg input[type=text], #opdlg select, #unlockdlg input { width: 100%; margin-top: 4px; }
+  #opdlg pre { max-height: 280px; }
+  .devlist label { margin: 4px 0; font-weight: normal; }
+  .acts button { margin: 2px 6px 2px 0; padding: 4px 10px; }
+  td.addr { white-space: pre-line; }
+  small { color: var(--muted); }
+</style>
+
 <h1>Storage</h1>
-<p class="muted">Read-only overview. Formatting, partitioning and mounting are done from the console.</p>
+<p class="muted">Disks, partitions, filesystems and logical volumes.</p>
 
-<h2>Filesystems</h2>
-<table>
-  <thead><tr><th>Mount</th><th>Device</th><th>Type</th><th>Size</th><th>Used</th><th>Free</th><th>Usage</th><th>Inodes used</th></tr></thead>
-  <tbody id="mounts"></tbody>
-</table>
+<div class="top">
+  <div class="seg" id="tabs">
+    <button data-t="overview" class="on">Overview</button>
+    <button data-t="disks">Disks</button>
+    <button data-t="lvm">LVM</button>
+  </div>
+</div>
 
-<h2>Disks and partitions</h2>
-<table>
-  <thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Filesystem</th><th>Mounted at</th><th>Model</th></tr></thead>
-  <tbody id="devs"></tbody>
-</table>
+<div class="lockbar" id="lockbar" hidden>
+  <span class="state" id="locktext">Disk changes are locked</span>
+  <button id="lockbtn">Unlock\u2026</button>
+  <span class="muted">Changing disks can destroy data, so changes stay locked until you confirm your password and a current code.</span>
+</div>
 
-<h2>Swap</h2>
-<p id="swap"></p>
+<!-- ---------------- overview ---------------- -->
+<section id="tab-overview">
+  <h2>Filesystems</h2>
+  <table>
+    <thead><tr><th>Mount</th><th>Device</th><th>Type</th><th>Size</th><th>Used</th><th>Free</th><th>Usage</th><th>Inodes used</th></tr></thead>
+    <tbody id="mounts"></tbody>
+  </table>
+  <h2>Disks and partitions</h2>
+  <table>
+    <thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Filesystem</th><th>Mounted at</th><th>Model</th></tr></thead>
+    <tbody id="devs"></tbody>
+  </table>
+  <h2>Swap</h2>
+  <p id="swap"></p>
+</section>
+
+<!-- ---------------- disks ---------------- -->
+<section id="tab-disks" hidden>
+  <p id="invmsg" class="crit"></p>
+  <p id="toolwarn" class="warn" hidden></p>
+  <table>
+    <thead><tr><th>Device</th><th>Type</th><th>Size</th><th>Contents</th><th>Mounted at</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody id="devrows"></tbody>
+  </table>
+  <p class="muted">"System" devices hold the running system and can't be changed here. "In use" devices must be unmounted or released first. Hover a status for the reason.</p>
+</section>
+
+<!-- ---------------- lvm ---------------- -->
+<section id="tab-lvm" hidden>
+  <p><button id="vgcreate" class="primary">Create volume group\u2026</button> <button id="rescan">Rescan</button></p>
+  <div id="lvmbox"></div>
+  <p class="muted">Logical volumes can be grown while mounted. Shrinking, snapshots and thin pools are not offered here.</p>
+</section>
+
+<dialog id="opdlg">
+  <h3 id="optitle" style="margin-top:0"></h3>
+  <div id="opbody"></div>
+  <pre id="operr" class="crit" hidden></pre>
+  <p id="opstate" class="muted"></p>
+  <p id="opbtns"></p>
+</dialog>
+
+<dialog id="unlockdlg" style="width:min(460px,94vw)">
+  <h3 style="margin-top:0">Unlock disk changes</h3>
+  <p class="muted">Enter your panel password and a current authentication code. Disk changes then stay unlocked for 10 minutes.</p>
+  <label>Password <input id="upass" type="password" autocomplete="off"></label>
+  <label>Authentication code <input id="ucode" type="text" inputmode="numeric" maxlength="7" autocomplete="off"></label>
+  <p><button id="uok" class="primary">Unlock</button><button id="ucancel">Cancel</button> <span id="uerr" class="crit"></span></p>
+</dialog>
 
 <script>
+const $ = (id) => document.getElementById(id);
+const JSON_H = { "Content-Type": "application/json" };
+
 async function api(path, opts) {
   const r = await fetch(path, opts);
   if (r.status === 401) { location.href = "/login.html"; throw new Error("not logged in"); }
   return r;
 }
-
+async function errText(r) {
+  try { const j = await r.json(); if (typeof j.detail === "string") return j.detail; } catch (e) {}
+  return "Request failed (" + r.status + ")";
+}
 function fmt(n) {
-  const u = ["B", "KB", "MB", "GB", "TB", "PB"];
-  let i = 0;
+  const u = ["B", "KB", "MB", "GB", "TB", "PB"]; let i = 0;
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return (i ? n.toFixed(1) : n) + " " + u[i];
 }
+function cell(tr, text, cls) { const td = document.createElement("td"); td.textContent = text; if (cls) td.className = cls; tr.appendChild(td); return td; }
+function btn(text, fn, cls) { const b = document.createElement("button"); b.type = "button"; b.textContent = text; b.onclick = fn; if (cls) b.className = cls; return b; }
+function pill(text, cls, title) { const s = document.createElement("span"); s.className = "pill " + cls; s.textContent = text; if (title) s.title = title; return s; }
 
-function cell(tr, text, cls) {
-  const td = document.createElement("td");
-  td.textContent = text;
-  if (cls) td.className = cls;
-  tr.appendChild(td);
-  return td;
+/* ---------------- tabs ---------------- */
+let tab = "overview";
+document.querySelectorAll("#tabs button").forEach((b) => { b.onclick = () => setTab(b.dataset.t); });
+function setTab(t) {
+  tab = t;
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.t === t));
+  for (const id of ["overview", "disks", "lvm"]) $("tab-" + id).hidden = id !== t;
+  $("lockbar").hidden = t === "overview";
+  if (t === "overview") loadOverview(); else { refreshLock(); loadInv(); }
 }
 
-async function load() {
+/* ---------------- overview ---------------- */
+async function loadOverview() {
   const r = await api("/api/storage");
   if (!r.ok) return;
   const d = await r.json();
-
-  const mb = document.getElementById("mounts");
-  mb.replaceChildren();
+  const mb = $("mounts"); mb.replaceChildren();
   for (const m of d.mounts) {
     const tr = document.createElement("tr");
-    cell(tr, m.mount + (m.readonly ? " (read-only)" : ""));
-    cell(tr, m.device);
-    cell(tr, m.fstype);
-    cell(tr, fmt(m.total));
-    cell(tr, fmt(m.used));
-    cell(tr, fmt(m.free));
+    cell(tr, m.mount + (m.readonly ? " (read-only)" : "")); cell(tr, m.device); cell(tr, m.fstype);
+    cell(tr, fmt(m.total)); cell(tr, fmt(m.used)); cell(tr, fmt(m.free));
     const td = document.createElement("td");
-    const bar = document.createElement("progress");
-    bar.max = 100; bar.value = m.percent;
-    td.appendChild(bar);
-    const pct = document.createElement("span");
-    pct.textContent = " " + m.percent.toFixed(1) + "%";
-    pct.className = m.percent >= 95 ? "crit" : m.percent >= 85 ? "warn" : "";
-    td.appendChild(pct);
-    tr.appendChild(td);
-    const ip = m.inodes_total > 0
-      ? ((m.inodes_total - m.inodes_free) / m.inodes_total * 100).toFixed(1) + "%"
-      : "n/a";
-    cell(tr, ip);
+    const bar = document.createElement("progress"); bar.max = 100; bar.value = m.percent; td.appendChild(bar);
+    const p = document.createElement("span"); p.textContent = " " + m.percent.toFixed(1) + "%";
+    p.className = m.percent >= 95 ? "crit" : m.percent >= 85 ? "warn" : ""; td.appendChild(p); tr.appendChild(td);
+    cell(tr, m.inodes_total > 0 ? ((m.inodes_total - m.inodes_free) / m.inodes_total * 100).toFixed(1) + "%" : "n/a");
     mb.appendChild(tr);
   }
-
-  const db = document.getElementById("devs");
-  db.replaceChildren();
+  const db = $("devs"); db.replaceChildren();
   for (const x of d.devices) {
     const tr = document.createElement("tr");
     cell(tr, "\u00a0\u00a0\u00a0".repeat(x.depth) + x.name);
     cell(tr, x.type + (x.removable ? " (removable)" : "") + (x.readonly ? " (read-only)" : ""));
-    cell(tr, fmt(x.size));
-    cell(tr, x.fstype);
-    cell(tr, x.mounts.join(", "));
-    cell(tr, x.model);
+    cell(tr, fmt(x.size)); cell(tr, x.fstype); cell(tr, x.mounts.join(", ")); cell(tr, x.model);
     db.appendChild(tr);
   }
-
-  document.getElementById("swap").textContent = d.swap.total
-    ? `${fmt(d.swap.used)} used of ${fmt(d.swap.total)} (${d.swap.percent}%)`
-    : "No swap configured";
+  $("swap").textContent = d.swap.total ? `${fmt(d.swap.used)} used of ${fmt(d.swap.total)} (${d.swap.percent}%)` : "No swap configured";
 }
 
-load();
-setInterval(load, 30000);
+/* ---------------- unlock state ---------------- */
+let unlockLeft = 0;
+async function refreshLock() {
+  const r = await api("/api/disks/unlock");
+  if (r.ok) { unlockLeft = (await r.json()).seconds_left; paintLock(); }
+}
+function paintLock() {
+  const el = $("locktext");
+  if (unlockLeft > 0) {
+    el.textContent = `Disk changes are UNLOCKED (${Math.floor(unlockLeft / 60)}:${String(unlockLeft % 60).padStart(2, "0")} left)`;
+    el.className = "state open"; $("lockbtn").textContent = "Lock now";
+  } else { el.textContent = "Disk changes are locked"; el.className = "state"; $("lockbtn").textContent = "Unlock\u2026"; }
+}
+setInterval(() => { if (unlockLeft > 0) { unlockLeft--; paintLock(); } }, 1000);
+$("lockbtn").onclick = async () => {
+  if (unlockLeft > 0) { await api("/api/disks/lock", { method: "POST" }); unlockLeft = 0; paintLock(); }
+  else askUnlock();
+};
+function askUnlock() {
+  return new Promise((resolve) => {
+    const dlg = $("unlockdlg");
+    $("upass").value = ""; $("ucode").value = ""; $("uerr").textContent = "";
+    let done = false;
+    const finish = (v) => { if (done) return; done = true; $("upass").value = ""; if (dlg.open) dlg.close(); resolve(v); };
+    $("uok").onclick = async () => {
+      $("uerr").textContent = "";
+      const r = await api("/api/disks/unlock", { method: "POST", headers: JSON_H,
+        body: JSON.stringify({ password: $("upass").value, code: $("ucode").value.trim() }) });
+      $("upass").value = "";
+      if (!r.ok) { $("uerr").textContent = await errText(r); return; }
+      await refreshLock(); finish(true);
+    };
+    $("ucancel").onclick = () => finish(false);
+    dlg.oncancel = () => finish(false);
+    dlg.showModal(); $("upass").focus();
+  });
+}
+
+/* ---------------- inventory ---------------- */
+let INV = { devices: [], pvs: [], vgs: [], lvs: [], tools: {} };
+async function loadInv() {
+  let r;
+  try { r = await api("/api/disks/inventory"); } catch (e) { return; }
+  if (!r.ok) { $("invmsg").textContent = await errText(r); return; }
+  $("invmsg").textContent = "";
+  INV = await r.json();
+  const missing = [];
+  if (!INV.tools.parted) missing.push("parted");
+  if (!INV.tools.lvm) missing.push("lvm2");
+  if (!INV.tools.mkfs_xfs) missing.push("xfsprogs");
+  $("toolwarn").hidden = !missing.length;
+  $("toolwarn").textContent = missing.length ? "Some tools are missing: sudo apt install -y " + missing.join(" ") : "";
+  renderDisks(); renderLvm();
+}
+setInterval(() => {
+  if (!document.hidden && tab !== "overview" && !$("opdlg").open && !$("unlockdlg").open) loadInv();
+}, 10000);
+setInterval(() => { if (!document.hidden && tab === "overview") loadOverview(); }, 30000);
+$("rescan").onclick = loadInv;
+const blankDevices = () => INV.devices.filter((d) => d.can.blank);
+
+/* ---------------- disks tab ---------------- */
+function contents(d) {
+  if (d.type === "disk" && d.pttype) return d.pttype === "gpt" ? "GPT partition table" : "MBR partition table";
+  if (d.vg) return "LVM member of " + d.vg;
+  if (d.fstype) return d.fstype + (d.label ? "  \u00b7  " + d.label : "");
+  return "\u2014";
+}
+function renderDisks() {
+  const body = $("devrows");
+  body.replaceChildren();
+  for (const d of INV.devices) {
+    const tr = document.createElement("tr");
+    cell(tr, "\u00a0\u00a0\u00a0\u00a0".repeat(d.depth) + d.name + (d.model ? "   (" + d.model + ")" : ""));
+    cell(tr, d.type); cell(tr, fmt(d.size)); cell(tr, contents(d)); cell(tr, d.mounts.join("\n"), "addr");
+    const st = document.createElement("td");
+    if (d.can.lock) st.appendChild(pill("System", "bad", d.can.lock));
+    else if (d.busy.length) st.appendChild(pill("In use", "off", d.busy.join("\n")));
+    else st.appendChild(pill("Free", "on"));
+    tr.appendChild(st);
+    const act = document.createElement("td"); act.className = "acts";
+    const c = d.can;
+    if (c.newpart) act.appendChild(btn("New partition\u2026", () => actNewPart(d)));
+    if (c.table) act.appendChild(btn(d.pttype ? "New table\u2026" : "Create table\u2026", () => actTable(d)));
+    if (c.mount) act.appendChild(btn("Mount\u2026", () => actMount(d)));
+    for (const mp of c.unmount) act.appendChild(btn("Unmount " + mp, () => actUnmount(mp)));
+    if (c.format) act.appendChild(btn("Format\u2026", () => actFormat(d)));
+    if (c.delete) act.appendChild(btn("Delete\u2026", () => actDelete(d)));
+    if (c.wipe) act.appendChild(btn("Erase\u2026", () => actWipe(d)));
+    tr.appendChild(act);
+    body.appendChild(tr);
+  }
+}
+
+/* ---------------- the action dialog ---------------- */
+let CUR = null;
+function setErr(t) { const e = $("operr"); e.textContent = t || ""; e.hidden = !t; }
+
+function openOp(spec) {
+  CUR = { spec, vals: null, plan: null, args: null, els: {} };
+  showForm();
+  $("opdlg").showModal();
+}
+
+function showForm() {
+  const spec = CUR.spec, box = $("opbody");
+  $("optitle").textContent = spec.title;
+  box.replaceChildren(); setErr(""); $("opstate").textContent = "";
+  if (spec.intro) { const p = document.createElement("p"); p.className = "muted"; p.textContent = spec.intro; box.appendChild(p); }
+  CUR.els = {};
+  for (const f of spec.fields || []) {
+    const lab = document.createElement("label");
+    let el;
+    if (f.type === "checkbox") {
+      el = document.createElement("input"); el.type = "checkbox"; el.checked = !!f.value;
+      lab.append(el, " " + f.label);
+    } else {
+      lab.append(f.label, document.createElement("br"));
+      if (f.type === "select") {
+        el = document.createElement("select");
+        for (const [v, t] of f.options) { const o = document.createElement("option"); o.value = v; o.textContent = t; el.appendChild(o); }
+        if (f.value !== undefined) el.value = f.value;
+      } else if (f.type === "devices") {
+        el = document.createElement("div"); el.className = "devlist";
+        for (const d of f.options) {
+          const l = document.createElement("label"); const c = document.createElement("input"); c.type = "checkbox"; c.value = d.path;
+          l.append(c, ` ${d.path}  (${fmt(d.size)})`); el.appendChild(l);
+        }
+        if (!f.options.length) el.textContent = "No blank devices are available. Create partitions on a free disk, or erase a device you no longer need.";
+      } else {
+        el = document.createElement("input"); el.type = "text"; el.value = f.value ?? ""; el.autocomplete = "off";
+        if (f.placeholder) el.placeholder = f.placeholder;
+      }
+      lab.appendChild(el);
+    }
+    if (f.hint) { const s = document.createElement("small"); s.textContent = f.hint; lab.append(document.createElement("br"), s); }
+    box.appendChild(lab);
+    CUR.els[f.k] = { f, el };
+  }
+  const bar = $("opbtns"); bar.replaceChildren();
+  bar.append(btn("Preview", preview, "primary"), btn("Cancel", () => $("opdlg").close()));
+}
+function collect() {
+  const v = {};
+  for (const [k, { f, el }] of Object.entries(CUR.els)) {
+    v[k] = f.type === "checkbox" ? el.checked : f.type === "devices" ? [...el.querySelectorAll("input:checked")].map((c) => c.value) : el.value;
+  }
+  return v;
+}
+async function preview() {
+  setErr("");
+  try { CUR.vals = collect(); CUR.args = CUR.spec.build(CUR.vals); } catch (e) { setErr(e.message); return; }
+  const r = await api("/api/disks/plan", { method: "POST", headers: JSON_H, body: JSON.stringify({ op: CUR.spec.op, args: CUR.args }) });
+  if (!r.ok) { setErr(await errText(r)); return; }
+  CUR.plan = await r.json();
+  showPlan();
+}
+function showPlan() {
+  const box = $("opbody"), plan = CUR.plan;
+  box.replaceChildren(); setErr("");
+  const h = document.createElement("p"); h.textContent = "These steps will run, in this order:"; box.appendChild(h);
+  const pre = document.createElement("pre"); pre.textContent = plan.steps.map((s) => "\u2022 " + s).join("\n"); box.appendChild(pre);
+  for (const w of plan.warnings) { const p = document.createElement("p"); p.className = "warn"; p.textContent = "\u26a0 " + w; box.appendChild(p); }
+  let typed = null;
+  if (plan.destructive) {
+    const want = CUR.spec.typed ? CUR.spec.typed(CUR.vals) : "";
+    const lab = document.createElement("label");
+    lab.append(`This cannot be undone. Type ${want} to confirm:`, document.createElement("br"));
+    typed = document.createElement("input"); typed.type = "text"; typed.autocomplete = "off"; lab.appendChild(typed);
+    box.appendChild(lab);
+    typed.oninput = () => { run.disabled = typed.value.trim() !== want; };
+  }
+  const bar = $("opbtns"); bar.replaceChildren();
+  const run = btn(plan.destructive ? "Erase and run" : "Run", runOp, "primary");
+  run.disabled = plan.destructive;
+  bar.append(run, btn("Back", showForm), btn("Cancel", () => $("opdlg").close()));
+  CUR.runBtn = run;
+}
+const postApply = () => api("/api/disks/apply", { method: "POST", headers: JSON_H, body: JSON.stringify({ op: CUR.spec.op, args: CUR.args }) });
+async function runOp() {
+  CUR.runBtn.disabled = true; setErr("");
+  $("opstate").textContent = "Working\u2026 this can take a while on large disks. Please don't close the page.";
+  let r = await postApply();
+  if (r.status === 423) { if (await askUnlock()) r = await postApply(); }
+  $("opstate").textContent = "";
+  if (!r.ok) { setErr(await errText(r)); CUR.runBtn.disabled = false; loadInv(); return; }
+  const d = await r.json();
+  const box = $("opbody"); box.replaceChildren();
+  const p = document.createElement("p"); p.textContent = "Done."; box.appendChild(p);
+  const pre = document.createElement("pre"); pre.textContent = d.log || ""; box.appendChild(pre);
+  const bar = $("opbtns"); bar.replaceChildren();
+  bar.append(btn("Close", () => $("opdlg").close(), "primary"));
+  loadInv();
+}
+$("opdlg").addEventListener("close", () => { loadInv(); });
+
+/* ---------------- action definitions ---------------- */
+function toMiB(s) {
+  const m = String(s).trim().match(/^(\d+)\s*([MGT]?)i?B?$/i);
+  if (!m) throw new Error("Enter a size like 512M, 20G or 1T");
+  return Number(m[1]) * ({ T: 1048576, G: 1024, M: 1 }[(m[2] || "M").toUpperCase()]);
+}
+function actNewPart(d) {
+  openOp({ title: `New partition on ${d.name}`, op: "part-create",
+    intro: "Creates a partition in free space. It is not formatted yet.",
+    fields: [
+      { k: "region", label: "Free space", type: "select", options: d.free.map((r, i) => [i, `${r.start} MiB to ${r.end} MiB (${fmt((r.end - r.start) * 1048576)} free)`]) },
+      { k: "size", label: "Size (empty = all of the selected free space)", type: "text", placeholder: "20G", hint: "Examples: 512M, 20G, 1T" },
+      { k: "name", label: "Name", type: "text", value: "data" },
+    ],
+    build: (v) => ({ disk: d.path, start_mib: d.free[Number(v.region)].start,
+      size_mib: v.size.trim() === "" ? null : toMiB(v.size), name: v.name.trim() || "data" }) });
+}
+function actTable(d) {
+  openOp({ title: `Create a partition table on ${d.name}`, op: "table-create",
+    intro: "This erases the whole disk, including every partition and all data on it.",
+    fields: [{ k: "label", label: "Partition table type", type: "select", value: "gpt",
+      options: [["gpt", "GPT (recommended)"], ["msdos", "MBR / DOS (older systems, 2 TB limit)"]] }],
+    build: (v) => ({ disk: d.path, label: v.label }), typed: () => d.name });
+}
+function actFormat(d) {
+  openOp({ title: `Format ${d.name}`, op: "fs-create", intro: "This erases everything on the device.",
+    fields: [
+      { k: "fstype", label: "Filesystem", type: "select", value: "ext4", options: [["ext4", "ext4"], ["xfs", "XFS"]] },
+      { k: "label", label: "Label (optional, up to 12 characters)", type: "text", value: "" },
+    ],
+    build: (v) => ({ device: d.path, fstype: v.fstype, label: v.label.trim() }), typed: () => d.name });
+}
+function actDelete(d) {
+  openOp({ title: `Delete partition ${d.name}`, op: "part-delete", intro: "The partition and its contents are destroyed.",
+    fields: [], build: () => ({ device: d.path }), typed: () => d.name });
+}
+function actWipe(d) {
+  openOp({ title: `Erase ${d.name}`, op: "wipe",
+    intro: "Removes the filesystem and other signatures so the device looks blank. The data becomes unreachable.",
+    fields: [], build: () => ({ device: d.path }), typed: () => d.name });
+}
+function actMount(d) {
+  const guess = (d.label || d.name).toLowerCase().replace(/[^a-z0-9_.-]/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 30) || "disk";
+  openOp({ title: `Mount ${d.name}`, op: "mount", fields: [
+      { k: "name", label: "Mount it at /mnt/\u2026", type: "text", value: guess },
+      { k: "persist", label: "Mount it automatically at boot (adds an /etc/fstab entry that can't block booting)", type: "checkbox", value: true },
+      { k: "readonly", label: "Read-only", type: "checkbox", value: false },
+    ],
+    build: (v) => ({ device: d.path, name: v.name.trim(), persist: v.persist, readonly: v.readonly }) });
+}
+function actUnmount(mp) {
+  openOp({ title: `Unmount ${mp}`, op: "unmount", fields: [
+      { k: "forget", label: "Also remove its boot-time entry from /etc/fstab (if the panel added one)", type: "checkbox", value: true },
+    ],
+    build: (v) => ({ mountpoint: mp, forget: v.forget }) });
+}
+
+/* LVM actions */
+function actVgCreate() {
+  openOp({ title: "Create a volume group", op: "vg-create",
+    intro: "Pools blank disks or partitions into one volume group that you then divide into logical volumes.",
+    fields: [
+      { k: "name", label: "Name", type: "text", placeholder: "vgdata" },
+      { k: "devices", label: "Devices to use", type: "devices", options: blankDevices() },
+    ],
+    build: (v) => ({ name: v.name.trim(), devices: v.devices }) });
+}
+function actVgExtend(vg) {
+  openOp({ title: `Add a disk to ${vg.name}`, op: "vg-extend", fields: [
+      { k: "device", label: "Device", type: "select", options: blankDevices().map((d) => [d.path, `${d.path}  (${fmt(d.size)})`]) },
+    ], build: (v) => ({ vg: vg.name, device: v.device }) });
+}
+function actVgReduce(vg, pv) {
+  openOp({ title: `Remove ${pv.path} from ${vg.name}`, op: "vg-reduce",
+    intro: "Only empty physical volumes can be removed.", fields: [], build: () => ({ vg: vg.name, device: pv.path }) });
+}
+function actVgRemove(vg) {
+  openOp({ title: `Remove volume group ${vg.name}`, op: "vg-remove", intro: "The group is empty, so no data is lost. Its devices become blank.",
+    fields: [], build: () => ({ vg: vg.name }) });
+}
+function actLvCreate(vg) {
+  openOp({ title: `New logical volume in ${vg.name}`, op: "lv-create",
+    intro: `${fmt(vg.free)} is free in this volume group.`, fields: [
+      { k: "name", label: "Name", type: "text", placeholder: "data" },
+      { k: "size", label: "Size", type: "text", placeholder: "10G", hint: "Examples: 10G, 500M, 50%FREE, 100%FREE" },
+    ], build: (v) => ({ vg: vg.name, name: v.name.trim(), size: v.size.trim() }) });
+}
+function actLvExtend(lv, vg) {
+  openOp({ title: `Grow ${lv.vg}/${lv.name}`, op: "lv-extend",
+    intro: `${fmt(vg.free)} is free in ${vg.name}. A mounted volume grows while in use.`, fields: [
+      { k: "add", label: "Amount to add", type: "text", placeholder: "5G", hint: "Examples: 5G, 500M, 100%FREE (all remaining space)" },
+      { k: "grow", label: "Grow the filesystem as well", type: "checkbox", value: true },
+    ], build: (v) => ({ lv: `${lv.vg}/${lv.name}`, add: v.add.trim(), grow_fs: v.grow }) });
+}
+function actLvRemove(lv) {
+  openOp({ title: `Delete logical volume ${lv.vg}/${lv.name}`, op: "lv-remove", intro: "The volume and all its data are destroyed.",
+    fields: [], build: () => ({ lv: `${lv.vg}/${lv.name}` }), typed: () => `${lv.vg}/${lv.name}` });
+}
+$("vgcreate").onclick = actVgCreate;
+
+function renderLvm() {
+  const box = $("lvmbox");
+  box.replaceChildren();
+  $("vgcreate").disabled = !INV.tools.lvm;
+  if (!INV.vgs.length) {
+    const p = document.createElement("p"); p.className = "muted";
+    p.textContent = INV.tools.lvm ? "There are no volume groups yet." : "LVM isn't installed: sudo apt install -y lvm2";
+    box.appendChild(p);
+  }
+  for (const vg of INV.vgs) {
+    const card = document.createElement("div"); card.className = "vcard";
+    const head = document.createElement("div");
+    const s = document.createElement("strong"); s.textContent = vg.name;
+    head.append(s, `   ${fmt(vg.size)} total \u00b7 ${fmt(vg.free)} free \u00b7 ${vg.lv_count} logical volume(s)   `);
+    if (vg.system) head.appendChild(pill("System", "bad", "This volume group holds the running system"));
+    card.appendChild(head);
+    const bar = document.createElement("p");
+    bar.append(btn("New logical volume\u2026", () => actLvCreate(vg)), btn("Add a disk\u2026", () => actVgExtend(vg)));
+    if (!vg.system && vg.lv_count === 0) bar.appendChild(btn("Remove group\u2026", () => actVgRemove(vg)));
+    card.appendChild(bar);
+
+    const pt = document.createElement("table");
+    const ph = document.createElement("tr");
+    for (const c of ["Physical volume", "Size", "Used", "Free", ""]) { const th = document.createElement("th"); th.textContent = c; ph.appendChild(th); }
+    const phead = document.createElement("thead"); phead.appendChild(ph); pt.appendChild(phead);
+    const pb = document.createElement("tbody");
+    for (const pv of INV.pvs.filter((p) => p.vg === vg.name)) {
+      const tr = document.createElement("tr");
+      cell(tr, pv.path); cell(tr, fmt(pv.size)); cell(tr, fmt(pv.used)); cell(tr, fmt(pv.free));
+      const td = document.createElement("td"); td.className = "acts";
+      if (pv.used === 0 && vg.pv_count > 1) td.appendChild(btn("Remove from group\u2026", () => actVgReduce(vg, pv)));
+      tr.appendChild(td); pb.appendChild(tr);
+    }
+    pt.appendChild(pb); card.appendChild(pt);
+
+    const lt = document.createElement("table");
+    const lh = document.createElement("tr");
+    for (const c of ["Logical volume", "Size", "Contents", "Mounted at", ""]) { const th = document.createElement("th"); th.textContent = c; lh.appendChild(th); }
+    const lhead = document.createElement("thead"); lhead.appendChild(lh); lt.appendChild(lhead);
+    const lb = document.createElement("tbody");
+    for (const lv of INV.lvs.filter((l) => l.vg === vg.name)) {
+      const d = INV.devices.find((x) => x.path === lv.dm_path);
+      const tr = document.createElement("tr");
+      cell(tr, lv.name); cell(tr, fmt(lv.size)); cell(tr, lv.fstype || "\u2014"); cell(tr, lv.mounts.join("\n"), "addr");
+      const td = document.createElement("td"); td.className = "acts";
+      td.appendChild(btn("Grow\u2026", () => actLvExtend(lv, vg)));
+      if (d) {
+        if (d.can.mount) td.appendChild(btn("Mount\u2026", () => actMount(d)));
+        for (const mp of d.can.unmount) td.appendChild(btn("Unmount " + mp, () => actUnmount(mp)));
+        if (d.can.format) td.appendChild(btn("Format\u2026", () => actFormat(d)));
+        if (d.can.wipe) td.appendChild(btn("Delete\u2026", () => actLvRemove(lv)));
+      }
+      tr.appendChild(td); lb.appendChild(tr);
+    }
+    lt.appendChild(lb); card.appendChild(lt);
+    box.appendChild(card);
+  }
+}
+
+loadOverview();
 </script>
