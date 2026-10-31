@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from audit import audit
 from auth import current_user, sessions
 from store import PersistentDict
+from sshkeys import load_pkey
 
 router = APIRouter(prefix="/api/fs")
 
@@ -192,7 +193,9 @@ def disposition(name):
 
 class ConnectBody(BaseModel):
     user: str = Field(pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
-    password: str = Field(min_length=1, max_length=256)
+    password: str = Field(default="", max_length=256)
+    private_key: str = Field(default="", max_length=16384)
+    passphrase: str = Field(default="", max_length=256)
 
 
 @router.post("/connect")
@@ -200,6 +203,8 @@ def connect(body: ConnectBody, request: Request, panel_user: str = Depends(curre
     token = request.cookies.get("session")
     ip = request.client.host
     key = f"{ip}:{panel_user}"
+    if bool(body.password) == bool(body.private_key):
+        raise HTTPException(400, "Enter either a password or a private key")
     rec = fails.get(key)
     if rec and time.time() - rec[1] <= WINDOW and rec[0] >= MAX_FAILS:
         raise HTTPException(429, "Too many failed attempts. Try again in a few minutes.")
@@ -228,16 +233,17 @@ def connect(body: ConnectBody, request: Request, panel_user: str = Depends(curre
 
     if pw is None:
         rejected("Wrong user name or password")
+    pkey = load_pkey(body.private_key, body.passphrase) if body.private_key else None
     client = paramiko.SSHClient()
     client.load_host_keys(str(KNOWN_HOSTS))
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
-        client.connect("127.0.0.1", port=22, username=body.user, password=body.password,
+        client.connect("127.0.0.1", port=22, username=body.user, password=body.password or None, pkey=pkey,
                        look_for_keys=False, allow_agent=False,
                        timeout=10, auth_timeout=20, banner_timeout=20)
     except paramiko.AuthenticationException:
         client.close()
-        rejected("Wrong user name or password")
+        rejected("The server did not accept that key for this account" if pkey else "Wrong user name or password")
     except paramiko.SSHException as e:
         client.close()
         raise HTTPException(502, f"Could not open a secure connection to the SSH server: {e}"[:200])
@@ -256,7 +262,7 @@ def connect(body: ConnectBody, request: Request, panel_user: str = Depends(curre
         except Exception:
             pass
     fails.pop(key, None)
-    audit(panel_user, ip, "fs_connect", target=body.user, ok=True)
+    audit(panel_user, ip, "fs_connect", target=body.user, ok=True, method="key" if pkey else "password")
     return {"user": body.user, "home": pw.pw_dir}
 
 

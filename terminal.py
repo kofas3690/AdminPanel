@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi import APIRouter, WebSocket
 from audit import audit
 from logs import ws_user, origin_ok
+from sshkeys import normalize_key
 
 router = APIRouter()
 
@@ -14,6 +15,7 @@ ENV = {"PATH": "/usr/bin:/bin", "TERM": "xterm-256color",
 NAME = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 MAX_TOTAL, MAX_PER_USER = 3, 2
 IDLE_LIMIT = 15 * 60
+KEY_WAIT = 30
 
 active = {}   # panel user -> number of open terminals
 
@@ -36,28 +38,56 @@ async def write_all(fd, data):
             await asyncio.sleep(0.01)
 
 
-def ssh_args(u):
-    return [
-        "-tt", "-e", "none", "-F", "/dev/null",
-        "-o", "StrictHostKeyChecking=yes",
-        "-o", f"UserKnownHostsFile={KNOWN_HOSTS}",
-        "-o", "GlobalKnownHostsFile=/dev/null",
-        "-o", "HostKeyAlgorithms=ssh-ed25519",
-        "-o", "PubkeyAuthentication=no",
-        "-o", "PreferredAuthentications=password,keyboard-interactive",
-        "-o", "NumberOfPasswordPrompts=3",
-        "-o", "ServerAliveInterval=30",
-        "-o", "ClearAllForwardings=yes",
-        "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
-        "-l", u, "127.0.0.1",
-    ]
+def ssh_args(u, keyfd=None):
+    args = ["-tt", "-e", "none", "-F", "/dev/null",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", f"UserKnownHostsFile={KNOWN_HOSTS}",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "HostKeyAlgorithms=ssh-ed25519"]
+    if keyfd is None:
+        args += ["-o", "PubkeyAuthentication=no",
+                 "-o", "PreferredAuthentications=password,keyboard-interactive"]
+    else:
+        args += ["-o", "PubkeyAuthentication=yes",
+                 "-o", "PreferredAuthentications=publickey",
+                 "-o", "IdentitiesOnly=yes",
+                 "-o", f"IdentityFile=/dev/fd/{keyfd}"]
+    args += ["-o", "NumberOfPasswordPrompts=3",
+             "-o", "ServerAliveInterval=30",
+             "-o", "ClearAllForwardings=yes",
+             "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
+             "-l", u, "127.0.0.1"]
+    return args
+
+
+async def read_key(ws):
+    """Waits for the browser's first message, which carries the private key, and
+    puts it in an anonymous in-memory file (it never touches the disk)."""
+    msg = await asyncio.wait_for(ws.receive(), KEY_WAIT)
+    if msg.get("type") != "websocket.receive" or msg.get("text") is None:
+        raise ValueError("the key was not received")
+    try:
+        data = json.loads(msg["text"])
+    except ValueError:
+        raise ValueError("the key message was not understood")
+    if not isinstance(data, dict) or data.get("type") != "key":
+        raise ValueError("the key message was not understood")
+    text = normalize_key(data.get("key"))
+    fd = os.memfd_create("panelkey", os.MFD_CLOEXEC)
+    try:
+        os.write(fd, text.encode("ascii"))
+        os.fchmod(fd, 0o600)
+    except Exception:
+        os.close(fd)
+        raise
+    return fd
 
 
 @router.websocket("/api/terminal/ws")
-async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24):
+async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24, auth: str = "password"):
     user = ws_user(ws)
     if (user is None or not origin_ok(ws) or not NAME.fullmatch(u)
-            or not KNOWN_HOSTS.exists()):
+            or auth not in ("password", "key") or not KNOWN_HOSTS.exists()):
         await ws.close(code=1008)
         return
     if sum(active.values()) >= MAX_TOTAL or active.get(user, 0) >= MAX_PER_USER:
@@ -69,7 +99,7 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24):
     started = last_input = time.time()
     loop = asyncio.get_running_loop()
     queue = asyncio.Queue()
-    master = slave = -1
+    master = slave = keyfd = -1
     reading = False
     proc = None
     tasks = []
@@ -132,16 +162,30 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24):
                 return
 
     try:
+        if auth == "key":
+            try:
+                keyfd = await read_key(ws)
+            except (ValueError, asyncio.TimeoutError) as e:
+                msg = str(e) or "no key was received in time"
+                try:
+                    await ws.send_bytes(f"\r\n[{msg}]\r\n".encode())
+                except Exception:
+                    pass
+                return
         master, slave = pty.openpty()
         os.set_blocking(master, False)
         set_size(master, clamp(rows), clamp(cols))
         proc = await asyncio.create_subprocess_exec(
-            SETSID, "--ctty", SSH, *ssh_args(u),
+            SETSID, "--ctty", SSH, *ssh_args(u, keyfd if keyfd != -1 else None),
             stdin=slave, stdout=slave, stderr=slave, env=ENV,
+            pass_fds=(keyfd,) if keyfd != -1 else (),
         )
         os.close(slave)
         slave = -1
-        audit(user, ws.client.host, "terminal_open", target=u)
+        if keyfd != -1:          # the ssh process has its own copy now
+            os.close(keyfd)
+            keyfd = -1
+        audit(user, ws.client.host, "terminal_open", target=u, method=auth)
         start_reading()
         tasks = [asyncio.create_task(c()) for c in (pump_out, pump_in, watchdog)]
         await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -159,7 +203,7 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24):
                 await proc.wait()
             except ProcessLookupError:
                 pass
-        for fd in (master, slave):
+        for fd in (master, slave, keyfd):
             if fd != -1:
                 os.close(fd)
         active[user] -= 1
