@@ -5,3 +5,5 @@ audit.log
 __pycache__/
 panel.db
 panel.db-journal
+dist/
+dist/

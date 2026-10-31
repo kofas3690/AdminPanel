@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=l
+case "${1:-}" in
+  update)
+    exec /usr/bin/apt-get update --error-on=any
+    ;;
+  upgrade)
+    exec /usr/bin/apt-get -y \
+      -o DPkg::Lock::Timeout=120 \
+      -o Dpkg::Options::=--force-confdef \
+      -o Dpkg::Options::=--force-confold \
+      upgrade
+    ;;
+  *)
+    echo "usage: $0 update|upgrade" >&2
+    exit 2
+    ;;
+esac

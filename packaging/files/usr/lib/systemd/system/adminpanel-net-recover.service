@@ -1,0 +1,11 @@
+[Unit]
+Description=Revert an unconfirmed network change
+After=systemd-networkd.service
+ConditionPathExists=/var/lib/adminpanel/net-pending
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/adminpanel-net rollback
+
+[Install]
+WantedBy=multi-user.target

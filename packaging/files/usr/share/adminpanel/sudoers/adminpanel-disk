@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-disk inventory, /usr/local/sbin/adminpanel-disk plan, /usr/local/sbin/adminpanel-disk apply, /usr/local/sbin/adminpanel-disk iscsi-discover, /usr/local/sbin/adminpanel-disk jobs, /usr/local/sbin/adminpanel-disk job-cancel, /usr/local/sbin/adminpanel-disk luks-header

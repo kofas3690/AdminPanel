@@ -1,0 +1,2600 @@
+#!/usr/bin/python3 -I
+import fcntl, json, math, os, re, shlex, shutil, subprocess, sys, syslog
+from pathlib import Path
+
+STATE_DIR = Path("/var/lib/adminpanel")
+LOCK_FILE = STATE_DIR / "disk.lock"
+FSTAB = Path("/etc/fstab")
+FSTAB_BAK = Path("/etc/fstab.adminpanel.bak")
+FSTAB_TAG = "# adminpanel"
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C", "LVM_SUPPRESS_FD_WARNINGS": "1"}
+MAX_INPUT = 64 * 1024
+NAME_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,30}")
+LVNAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,40}")
+LABEL_RE = re.compile(r"[A-Za-z0-9_.-]{1,12}")
+PARTNAME_RE = re.compile(r"[A-Za-z0-9_-]{1,36}")
+SIZE_RE = re.compile(r"([1-9][0-9]{0,6})([MGT])")
+PCT_RE = re.compile(r"([1-9][0-9]?|100)%FREE")
+FS_MOUNTABLE = {"ext2", "ext3", "ext4", "xfs", "btrfs", "vfat", "exfat"}
+FS_MAKE = {"ext4": ("mkfs.ext4", ["-F", "-q"], "e2fsprogs"), "xfs": ("mkfs.xfs", ["-f"], "xfsprogs")}
+SKIP_PREFIX = ("zram", "ram", "loop", "nbd", "sr")
+LSBLK_COLS = "NAME,KNAME,PATH,TYPE,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINTS,PKNAME,RO,RM,MODEL,SERIAL,PTTYPE,PARTLABEL,TRAN,ROTA,DISC-MAX"
+INVENTORY_EXTRAS = []          # later parts register extra inventory sections here
+
+
+class Bad(Exception):
+    pass
+
+
+def need(cond, msg):
+    if not cond:
+        raise Bad(msg)
+
+
+def have(tool):
+    return shutil.which(tool, path=ENV["PATH"]) is not None
+
+
+def run(argv, timeout=60, data=None, pass_fds=()):
+    kw = {"input": data} if data is not None else {"stdin": subprocess.DEVNULL}
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, errors="replace",
+                              env=ENV, timeout=timeout, pass_fds=pass_fds, **kw)
+    except subprocess.TimeoutExpired:
+        raise Bad(f"{argv[0]} took too long")
+    except FileNotFoundError:
+        raise Bad(f"{argv[0]} is not installed")
+
+
+class Lock:
+    def __enter__(self):
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        self.f = open(LOCK_FILE, "w")
+        fcntl.flock(self.f, fcntl.LOCK_EX)
+
+    def __exit__(self, *exc):
+        self.f.close()
+
+
+def to_int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
+def truthy(v):
+    return v in (True, 1, "1", "true")
+
+
+def managed_mp(mp):
+    return isinstance(mp, str) and mp.startswith(("/mnt/", "/srv/"))
+
+
+def atomic_write(path, text, mode):
+    tmp = path.with_name(path.name + ".adminpanel.tmp")
+    tmp.write_text(text)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+# ---------------- inventory ----------------
+
+def lvm_report(cmd, cols):
+    if not have(cmd):
+        return []
+    r = run([cmd, "--reportformat", "json", "--units", "b", "--nosuffix", "-o", cols])
+    if r.returncode != 0:
+        return []
+    try:
+        rep = json.loads(r.stdout)["report"][0]
+    except (ValueError, KeyError, IndexError):
+        return []
+    return next(iter(rep.values()), [])
+
+
+def part_number(kname):
+    try:
+        return int(Path(f"/sys/class/block/{kname}/partition").read_text().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def free_regions(path):
+    out = []
+    if not have("parted"):
+        return out
+    r = run(["parted", "-m", "-s", path, "unit", "MiB", "print", "free"])
+    for line in r.stdout.splitlines():
+        p = line.rstrip(";").split(":")
+        if len(p) >= 5 and p[-1] == "free":
+            try:
+                s, e = float(p[1].rstrip("MiB")), float(p[2].rstrip("MiB"))
+            except ValueError:
+                continue
+            start, end = math.ceil(s), math.floor(e)
+            if end - start >= 4:
+                out.append({"start": start, "end": end})
+    return out
+
+
+def build_inventory():
+    r = run(["lsblk", "-J", "-b", "-e", "7,11", "-o", LSBLK_COLS])
+    need(r.returncode == 0, "lsblk failed: " + (r.stderr or "").strip()[:200])
+    try:
+        tree = json.loads(r.stdout)["blockdevices"]
+    except (ValueError, KeyError):
+        raise Bad("could not read the device list")
+    nodes, order = {}, []
+    EXTRA.clear()
+    EXTRA.update(extra_busy_map())
+
+    def walk(items, parent, depth):
+        for it in items:
+            kname = it.get("kname") or it.get("name") or ""
+            if kname.startswith(SKIP_PREFIX):
+                continue
+            path = it.get("path") or ("/dev/" + kname)
+            n = nodes.get(path)
+            if n is None:
+                n = nodes[path] = {
+                    "path": path, "name": it.get("name") or kname, "kname": kname,
+                    "type": it.get("type") or "", "size": to_int(it.get("size")),
+                    "fstype": it.get("fstype") or "", "label": it.get("label") or "",
+                    "uuid": it.get("uuid") or "",
+                    "mounts": [m for m in (it.get("mountpoints") or []) if m],
+                    "ro": truthy(it.get("ro")), "model": (it.get("model") or "").strip(),
+                    "serial": (it.get("serial") or "").strip(), "pttype": it.get("pttype") or "",
+                    "tran": it.get("tran") or "", "rota": truthy(it.get("rota")), "disc_max": to_int(it.get("disc-max")),
+                    "partlabel": it.get("partlabel") or "", "children": [], "parents": [],
+                    "depth": depth, "free": [],
+                }
+                order.append(path)
+            if parent is not None:
+                if parent not in n["parents"]:
+                    n["parents"].append(parent)
+                if path not in nodes[parent]["children"]:
+                    nodes[parent]["children"].append(path)
+            walk(it.get("children") or [], path, depth + 1)
+
+    walk(tree, None, 0)
+
+    pvs_raw = lvm_report("pvs", "pv_name,vg_name,pv_size,pv_free,pv_used")
+    vgs_raw = lvm_report("vgs", "vg_name,vg_size,vg_free,pv_count,lv_count")
+    lvs_raw = lvm_report("lvs", "lv_name,vg_name,lv_size,lv_path,lv_dm_path,lv_attr")
+    pvmap = {p.get("pv_name"): p for p in pvs_raw}
+
+    def subtree(path):
+        seen, stack = {path}, [path]
+        while stack:
+            for c in nodes[stack.pop()]["children"]:
+                if c not in seen:
+                    seen.add(c)
+                    stack.append(c)
+        return seen
+
+    for path, n in nodes.items():
+        n["_sub"] = subtree(path)
+        n["subtree_mounts"] = sorted({m for p in n["_sub"] for m in nodes[p]["mounts"]})
+        n["protected"] = any(not managed_mp(m) for m in n["subtree_mounts"])
+        n["vg"] = (pvmap.get(path) or {}).get("vg_name") or ""
+    for n in nodes.values():
+        reasons = []
+        if n["subtree_mounts"]:
+            reasons.append("mounted at " + ", ".join(n["subtree_mounts"]))
+        for p in n["_sub"]:
+            m = nodes[p]
+            if m["vg"]:
+                reasons.append(f"{p} is part of the volume group {m['vg']}")
+            if p != n["path"] and m["type"] not in ("disk", "part"):
+                reasons.append(f"{p} ({m['type']}) is built on it")
+        reasons.extend(EXTRA.get(os.path.realpath(n["path"]), []))
+        n["busy"] = sorted(set(reasons))
+        n["partn"] = part_number(n["kname"]) if n["type"] == "part" else 0
+    for n in nodes.values():
+        if n["type"] == "disk" and n["pttype"] in ("gpt", "dos") and not n["protected"]:
+            n["free"] = free_regions(n["path"])
+
+    lvs = []
+    for l in lvs_raw:
+        node = nodes.get(l.get("lv_dm_path", ""))
+        lvs.append({"vg": l.get("vg_name", ""), "name": l.get("lv_name", ""), "size": to_int(l.get("lv_size")),
+                    "dm_path": l.get("lv_dm_path", ""), "path": l.get("lv_path", ""),
+                    "fstype": node["fstype"] if node else "", "mounts": node["mounts"] if node else [],
+                    "protected": bool(node and node["protected"])})
+    system_vgs = {l["vg"] for l in lvs if l["protected"]}
+    pvs = [{"path": p.get("pv_name", ""), "vg": p.get("vg_name") or "", "size": to_int(p.get("pv_size")),
+            "free": to_int(p.get("pv_free")), "used": to_int(p.get("pv_used"))} for p in pvs_raw]
+    vgs = [{"name": v.get("vg_name", ""), "size": to_int(v.get("vg_size")), "free": to_int(v.get("vg_free")),
+            "pv_count": to_int(v.get("pv_count")), "lv_count": to_int(v.get("lv_count")),
+            "system": v.get("vg_name") in system_vgs,
+            "pvs": [p["path"] for p in pvs if p["vg"] == v.get("vg_name")]} for v in vgs_raw]
+    return {"nodes": nodes, "order": order, "pvs": pvs, "vgs": vgs, "lvs": lvs}
+
+
+def disk_of(inv, n):
+    if n["type"] == "disk":
+        return n
+    for p in n["parents"]:
+        d = inv["nodes"].get(p)
+        if d and d["type"] == "disk":
+            return d
+    return None
+
+
+def why_locked(inv, n):
+    if n["protected"]:
+        return "Part of the running system"
+    if n["type"] == "part":
+        d = disk_of(inv, n)
+        if d and d["protected"]:
+            return "On the disk that holds the running system"
+    return ""
+
+
+def block_reason(inv, n, kind):
+    """Why `kind` is not allowed on this device, or '' when it is."""
+    kinds = {"newpart": ("disk",), "table": ("disk",), "wipe": WIPE_TYPES,
+             "format": WIPE_TYPES, "delete": ("part",), "mount": None,
+             "blank": BLANK_TYPES, "export": EXPORT_TYPES}
+    allowed = kinds[kind]
+    if allowed is not None and n["type"] not in allowed:
+        return "This kind of device can't be used for that"
+    if kind == "mount":
+        if n["fstype"] not in FS_MOUNTABLE:
+            return "It has no supported filesystem (format it first)"
+        if n["mounts"]:
+            return "It is already mounted"
+        return ""
+    lock = why_locked(inv, n)
+    if lock:
+        return lock
+    if n["ro"]:
+        return "The device is read-only"
+    if kind == "newpart":
+        if n["pttype"] not in ("gpt", "dos"):
+            return "Create a partition table first"
+        return "" if n["free"] else "There is no free space"
+    if n["busy"]:
+        return "In use: " + "; ".join(n["busy"])
+    if kind in ("format", "blank") and n["children"]:
+        return "Partitions or volumes are built on it"
+    if kind == "blank" and (n["fstype"] or n["vg"]):
+        return "It already holds data or belongs to a volume group; erase it first"
+    return ""
+
+
+def get_dev(inv, path, kind):
+    need(isinstance(path, str) and path in inv["nodes"], "unknown device")
+    n = inv["nodes"][path]
+    why = block_reason(inv, n, kind)
+    need(not why, f"{path}: {why}")
+    return n
+
+
+def fstab_managed():
+    out = []
+    try:
+        for l in FSTAB.read_text().splitlines():
+            f = l.split()
+            if l.rstrip().endswith(FSTAB_TAG) and len(f) >= 4:
+                out.append({"spec": f[0], "mountpoint": f[1], "options": f[3]})
+    except OSError:
+        pass
+    return out
+
+
+def cmd_inventory():
+    inv = build_inventory()
+    devices = []
+    for path in inv["order"]:
+        n = inv["nodes"][path]
+        can = {k: not block_reason(inv, n, k)
+               for k in ("newpart", "table", "wipe", "format", "delete", "mount", "blank", "export")}
+        can["unmount"] = [m for m in n["mounts"] if managed_mp(m)]
+        can["lock"] = why_locked(inv, n)
+        can["fsgrow"] = fsgrow_ok(n)
+        d = {k: n[k] for k in ("path", "name", "type", "size", "fstype", "label", "uuid", "mounts", "pttype",
+                               "model", "serial", "tran", "rota", "disc_max", "partlabel", "vg", "busy", "protected", "free", "depth", "ro", "partn")}
+        d["can"] = can
+        devices.append(d)
+    out = {"devices": devices, "pvs": inv["pvs"], "vgs": inv["vgs"], "lvs": inv["lvs"],
+           "fstab": fstab_managed(),
+           "tools": {"parted": have("parted"), "lvm": have("lvs"),
+                     "mkfs_ext4": have("mkfs.ext4"), "mkfs_xfs": have("mkfs.xfs")}}
+    for fn in INVENTORY_EXTRAS:
+        fn(inv, out)
+    print(json.dumps(out))
+
+
+# ---------------- operations ----------------
+
+OPS = {}
+
+
+def op(name, destructive=False):
+    def deco(fn):
+        OPS[name] = (fn, destructive)
+        return fn
+    return deco
+
+
+def S(*argv, soft=False, data=None):
+    return {"argv": [str(a) for a in argv], "soft": soft, "input": data}
+
+
+def F(desc, fn):
+    return {"desc": desc, "fn": fn}
+
+
+def describe(step):
+    return shlex.join(step["argv"]) if "argv" in step else step["desc"]
+
+
+def settle(path=None):
+    steps = []
+    if path:
+        steps.append(S("partprobe", path, soft=True))
+    steps.append(S("udevadm", "settle", soft=True))
+    return steps
+
+
+def fstab_add(entry, mp):
+    lines = FSTAB.read_text().splitlines()
+    for l in lines:
+        f = l.split()
+        if len(f) >= 2 and not l.lstrip().startswith("#") and f[1] == mp:
+            raise Bad(f"/etc/fstab already has an entry for {mp}")
+    if not FSTAB_BAK.exists():
+        shutil.copy2(FSTAB, FSTAB_BAK)
+    atomic_write(FSTAB, "\n".join(lines + [entry]) + "\n", 0o644)
+    run(["systemctl", "daemon-reload"])
+
+
+def fstab_remove(mp):
+    lines = FSTAB.read_text().splitlines()
+    keep = []
+    for l in lines:
+        f = l.split()
+        if l.rstrip().endswith(FSTAB_TAG) and len(f) >= 2 and f[1] == mp:
+            continue
+        keep.append(l)
+    if len(keep) != len(lines):
+        atomic_write(FSTAB, "\n".join(keep) + "\n", 0o644)
+        run(["systemctl", "daemon-reload"])
+
+
+# ----- partitions -----
+
+@op("table-create", destructive=True)
+def op_table_create(inv, a):
+    n = get_dev(inv, a.get("disk"), "table")
+    label = a.get("label")
+    need(label in ("gpt", "msdos"), "choose gpt or msdos")
+    steps = [S("wipefs", "-a", c) for c in n["children"]]
+    steps += [S("wipefs", "-a", n["path"]), S("parted", "-s", n["path"], "mklabel", label)] + settle(n["path"])
+    warns = [f"Everything on {n['path']} will be destroyed, including all of its partitions."]
+    return steps, warns
+
+
+@op("part-create")
+def op_part_create(inv, a):
+    n = get_dev(inv, a.get("disk"), "newpart")
+    start = a.get("start_mib")
+    need(isinstance(start, int) and not isinstance(start, bool), "choose where the partition starts")
+    reg = next((r for r in n["free"] if r["start"] <= start < r["end"]), None)
+    need(reg is not None, "that position is not inside free space")
+    size = a.get("size_mib")
+    if size in (None, ""):
+        end = reg["end"]
+    else:
+        need(isinstance(size, int) and not isinstance(size, bool) and size >= 1, "the size must be a whole number of MiB")
+        end = start + size
+        need(end <= reg["end"], f"that is bigger than the free space ({reg['end'] - start} MiB available here)")
+    need(end - start >= 1, "the partition would be empty")
+    name = a.get("name") or "data"
+    need(isinstance(name, str) and PARTNAME_RE.fullmatch(name), "the name may use letters, digits, - and _")
+    ptype = "primary" if n["pttype"] == "dos" else name
+    steps = [S("parted", "-s", "-a", "optimal", n["path"], "mkpart", ptype, "ext4", f"{start}MiB", f"{end}MiB")] + settle(n["path"])
+    return steps, []
+
+
+@op("part-delete", destructive=True)
+def op_part_delete(inv, a):
+    n = get_dev(inv, a.get("device"), "delete")
+    d = disk_of(inv, n)
+    need(d is not None and n["partn"] > 0, "could not work out which disk this partition is on")
+    steps = [S("wipefs", "-a", n["path"]), S("parted", "-s", d["path"], "rm", n["partn"])] + settle(d["path"])
+    return steps, [f"{n['path']} and everything on it will be destroyed."]
+
+
+@op("wipe", destructive=True)
+def op_wipe(inv, a):
+    n = get_dev(inv, a.get("device"), "wipe")
+    steps = [S("wipefs", "-a", c) for c in n["children"]] + [S("wipefs", "-a", n["path"])] + settle(n["path"] if n["type"] == "disk" else None)
+    return steps, [f"The filesystem and other signatures on {n['path']} will be erased, so its data becomes unreachable."]
+
+
+@op("fs-create", destructive=True)
+def op_fs_create(inv, a):
+    n = get_dev(inv, a.get("device"), "format")
+    fs = a.get("fstype")
+    need(fs in FS_MAKE, "choose ext4 or xfs")
+    tool, flags, pkg = FS_MAKE[fs]
+    need(have(tool), f"{tool} is not installed (sudo apt install {pkg})")
+    label = a.get("label") or ""
+    need(isinstance(label, str) and (label == "" or LABEL_RE.fullmatch(label)),
+         "the label may use letters, digits, . _ - (12 characters at most)")
+    argv = [tool, *flags] + (["-L", label] if label else []) + [n["path"]]
+    steps = [S("wipefs", "-a", n["path"]), S(*argv)] + settle()
+    return steps, [f"Everything on {n['path']} will be destroyed."]
+
+
+# ----- mounts -----
+
+@op("mount")
+def op_mount(inv, a):
+    n = get_dev(inv, a.get("device"), "mount")
+    name = a.get("name")
+    need(isinstance(name, str) and NAME_RE.fullmatch(name), "the folder name may use lowercase letters, digits, - _ and .")
+    mp = "/mnt/" + name
+    need(not os.path.lexists(mp) or (os.path.isdir(mp) and not os.path.islink(mp)
+         and not os.path.ismount(mp) and not os.listdir(mp)), f"{mp} already exists and is not an empty folder")
+    ro, persist = bool(a.get("readonly")), bool(a.get("persist"))
+    need(not (persist and n["type"] == "crypt" and n["name"] not in autounlock_names()),
+         "an encrypted volume is locked again after a reboot, so it can't be mounted at boot")
+    steps = [F(f"create the folder {mp}", lambda: os.makedirs(mp, mode=0o755, exist_ok=True)),
+             S("mount", *(["-o", "ro"] if ro else []), n["path"], mp)]
+    if persist:
+        need(n["uuid"], "this device has no UUID, so it can't be mounted at boot safely")
+        passno = "2" if n["fstype"] in ("ext2", "ext3", "ext4") else "0"
+        opts = "defaults,nofail,x-systemd.device-timeout=10s" + (",ro" if ro else "") + (",_netdev" if is_remote(inv, n) else "")
+        entry = f"UUID={n['uuid']} {mp} {n['fstype']} {opts} 0 {passno} {FSTAB_TAG}"
+        steps.append(F(f"add a boot-time mount to /etc/fstab: {entry}", lambda: fstab_add(entry, mp)))
+    return steps, []
+
+
+@op("unmount")
+def op_unmount(inv, a):
+    mp = a.get("mountpoint")
+    need(isinstance(mp, str) and re.fullmatch(r"/(mnt|srv)(/[A-Za-z0-9_.-]{1,64}){1,3}", mp), "that is not a mount point this page manages")
+    owner = next((n for n in inv["nodes"].values() if mp in n["mounts"]), None)
+    need(owner is not None, "nothing is mounted there")
+    steps = [S("umount", mp)]
+    if a.get("forget"):
+        steps.append(F("remove the boot-time mount for it from /etc/fstab", lambda: fstab_remove(mp)))
+    return steps, []
+
+
+# ----- LVM -----
+
+def vg_of(inv, name):
+    vg = next((v for v in inv["vgs"] if v["name"] == name), None)
+    need(vg is not None, "unknown volume group")
+    return vg
+
+
+def lv_of(inv, ref):
+    need(isinstance(ref, str) and "/" in ref, "choose a logical volume")
+    vg, _, name = ref.partition("/")
+    lv = next((l for l in inv["lvs"] if l["vg"] == vg and l["name"] == name), None)
+    need(lv is not None, "unknown logical volume")
+    return lv
+
+
+def parse_size(s, what="size"):
+    if isinstance(s, str) and SIZE_RE.fullmatch(s):
+        m = SIZE_RE.fullmatch(s)
+        return ["-L", s], int(m[1]) * {"M": 1 << 20, "G": 1 << 30, "T": 1 << 40}[m[2]]
+    if isinstance(s, str) and PCT_RE.fullmatch(s):
+        return ["-l", s], None
+    raise Bad(f"the {what} looks like 10G, 500M, 2T or 50%FREE")
+
+
+@op("vg-create")
+def op_vg_create(inv, a):
+    name = a.get("name")
+    need(isinstance(name, str) and LVNAME_RE.fullmatch(name), "the name may use letters, digits and . _ + -")
+    need(not any(v["name"] == name for v in inv["vgs"]), "a volume group with that name already exists")
+    devs = a.get("devices")
+    need(isinstance(devs, list) and 1 <= len(devs) <= 16 and len(set(devs)) == len(devs), "choose one or more devices")
+    for d in devs:
+        get_dev(inv, d, "blank")
+    return [S("vgcreate", name, *devs)] + settle(), ["The chosen devices become LVM physical volumes."]
+
+
+@op("vg-extend")
+def op_vg_extend(inv, a):
+    vg = vg_of(inv, a.get("vg"))
+    d = get_dev(inv, a.get("device"), "blank")
+    return [S("vgextend", vg["name"], d["path"])] + settle(), []
+
+
+@op("vg-reduce")
+def op_vg_reduce(inv, a):
+    vg = vg_of(inv, a.get("vg"))
+    pv = next((p for p in inv["pvs"] if p["path"] == a.get("device") and p["vg"] == vg["name"]), None)
+    need(pv is not None, "that device is not in this volume group")
+    need(pv["used"] == 0, "it still holds data. Move it first with pvmove from the console")
+    need(vg["pv_count"] > 1, "this is the last physical volume; remove the volume group instead")
+    return [S("vgreduce", vg["name"], pv["path"]), S("pvremove", pv["path"])] + settle(), []
+
+
+@op("vg-remove")
+def op_vg_remove(inv, a):
+    vg = vg_of(inv, a.get("vg"))
+    need(not vg["system"], "this volume group holds the running system")
+    need(vg["lv_count"] == 0, "it still has logical volumes; remove them first")
+    return [S("vgremove", vg["name"])] + [S("pvremove", p) for p in vg["pvs"]] + settle(), []
+
+
+@op("lv-create")
+def op_lv_create(inv, a):
+    vg = vg_of(inv, a.get("vg"))
+    name = a.get("name")
+    need(isinstance(name, str) and LVNAME_RE.fullmatch(name), "the name may use letters, digits and . _ + -")
+    need(not any(l["vg"] == vg["name"] and l["name"] == name for l in inv["lvs"]), "a volume with that name already exists")
+    flag, size = parse_size(a.get("size"))
+    need(vg["free"] > 0, "the volume group has no free space")
+    need(size is None or size <= vg["free"], "that is more than the free space in the volume group")
+    return [S("lvcreate", "-y", "-n", name, *flag, vg["name"])] + settle(), []
+
+
+@op("lv-extend")
+def op_lv_extend(inv, a):
+    lv = lv_of(inv, a.get("lv"))
+    vg = vg_of(inv, lv["vg"])
+    flag, size = parse_size(a.get("add"), "amount to add")
+    need(vg["free"] > 0, "the volume group has no free space")
+    need(size is None or size <= vg["free"], "that is more than the free space in the volume group")
+    flag = [flag[0], "+" + flag[1]]
+    argv = ["lvextend"] + (["-r"] if a.get("grow_fs", True) else []) + flag + [f"{lv['vg']}/{lv['name']}"]
+    warns = [] if a.get("grow_fs", True) else ["The filesystem is not grown. You will have to do that yourself."]
+    return [S(*argv)] + settle(), warns
+
+
+@op("lv-remove", destructive=True)
+def op_lv_remove(inv, a):
+    lv = lv_of(inv, a.get("lv"))
+    n = get_dev(inv, lv["dm_path"], "wipe")
+    return [S("lvremove", "-y", f"{lv['vg']}/{lv['name']}")] + settle(), [f"{lv['vg']}/{lv['name']} and all its data will be destroyed."]
+
+
+# ---- storage part 2 ----
+import ipaddress
+
+RAID_TYPES = ("raid0", "raid1", "raid4", "raid5", "raid6", "raid10", "linear")
+WIPE_TYPES = ("disk", "part", "lvm", "crypt", "mpath") + RAID_TYPES
+BLANK_TYPES = ("disk", "part", "crypt", "mpath") + RAID_TYPES
+RAID_MIN = {"raid0": 2, "raid1": 2, "raid5": 3, "raid6": 4, "raid10": 4}
+RAID_REDUNDANT = ("raid1", "raid5", "raid6", "raid10")
+MDCONF = Path("/etc/mdadm/mdadm.conf")
+MD_TAG = "# adminpanel"
+MAPPER_RE = re.compile(r"[a-z][a-z0-9_-]{0,30}")
+IQN_RE = re.compile(r"(iqn\.[0-9]{4}-[0-9]{2}\.[A-Za-z0-9.-]{1,100}(:[A-Za-z0-9._:@-]{1,200})?"
+                    r"|eui\.[0-9A-Fa-f]{16}|naa\.[0-9A-Fa-f]{16,32})")
+HOSTNAME_RE = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+                         r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*")
+CHAP_USER_RE = re.compile(r"[A-Za-z0-9_.@:-]{1,200}")
+CHAP_PASS_RE = re.compile(r"[\x21-\x7e]{1,128}")
+MODE = {"m": "plan"}
+
+
+def redact(v):
+    if isinstance(v, dict):
+        return {k: ("***" if ("pass" in k.lower() or "secret" in k.lower()) else redact(x))
+                for k, x in v.items()}
+    if isinstance(v, list):
+        return [redact(x) for x in v]
+    return v
+
+
+def secret(a, key, label, minlen, maxlen):
+    v = a.get(key)
+    if MODE["m"] == "plan" and (v is None or v == ""):
+        return "placeholder"
+    need(isinstance(v, str), f"enter the {label}")
+    need(minlen <= len(v) <= maxlen, f"the {label} must be {minlen} to {maxlen} characters long")
+    need(not any(c in v for c in "\n\r\x00"), f"the {label} can't contain line breaks")
+    return v
+
+
+def sysread(p):
+    try:
+        return Path(p).read_text().strip()
+    except OSError:
+        return ""
+
+
+def write_sysfs(path, value):
+    try:
+        Path(path).write_text(value)
+    except OSError as e:
+        raise Bad(f"could not write {path}: {e.strerror}")
+
+
+def is_remote(inv, n):
+    seen, stack = set(), [n["path"]]
+    while stack:
+        p = stack.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        x = inv["nodes"].get(p)
+        if not x:
+            continue
+        if x.get("tran") == "iscsi":
+            return True
+        stack.extend(x["parents"])
+    return False
+
+
+def remote_warnings(args):
+    out = []
+    for v in args.values():
+        for d in (v if isinstance(v, list) else [v]):
+            if isinstance(d, str) and d.startswith("/dev/"):
+                base = os.path.basename(os.path.realpath(d))
+                if "/session" in os.path.realpath("/sys/class/block/" + base):
+                    out.append(f"{d} is on an iSCSI target. If other servers use the same storage, changing it can destroy their data too.")
+    return out[:3]
+
+
+# ---------------- RAID ----------------
+
+def md_uuid(path):
+    for line in run(["mdadm", "--detail", "--export", path]).stdout.splitlines():
+        if line.startswith("MD_UUID="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def mdconf_add(path):
+    line = next((l.strip() for l in run(["mdadm", "--detail", "--brief", path]).stdout.splitlines()
+                 if l.startswith("ARRAY")), "")
+    need(line, "could not read the new array's identity")
+    MDCONF.parent.mkdir(parents=True, exist_ok=True)
+    text = MDCONF.read_text() if MDCONF.exists() else ""
+    uuid = md_uuid(path)
+    if uuid and ("UUID=" + uuid) in text:
+        return
+    atomic_write(MDCONF, text.rstrip("\n") + ("\n" if text else "") + MD_TAG + "\n" + line + "\n", 0o644)
+
+
+def mdconf_remove(uuid):
+    if not uuid or not MDCONF.exists():
+        return
+    lines = MDCONF.read_text().splitlines()
+    keep, i = [], 0
+    while i < len(lines):
+        if lines[i].strip() == MD_TAG and i + 1 < len(lines) and ("UUID=" + uuid) in lines[i + 1]:
+            i += 2
+            continue
+        keep.append(lines[i])
+        i += 1
+    atomic_write(MDCONF, "\n".join(keep) + "\n", 0o644)
+
+
+def array_name(path):
+    md = Path("/dev/md")
+    if md.is_dir():
+        for link in md.iterdir():
+            try:
+                if str(link.resolve()) == path:
+                    return link.name
+            except OSError:
+                pass
+    return ""
+
+
+def raid_members(n):
+    base = Path(f"/sys/block/{n['kname']}/md")
+    return [("/dev/" + d.name[4:], sysread(d / "state"), sysread(d / "slot")) for d in sorted(base.glob("dev-*"))]
+
+
+def raid_details(inv, n):
+    base = f"/sys/block/{n['kname']}/md"
+    pct = None
+    m = re.match(r"(\d+)\s*/\s*(\d+)", sysread(base + "/sync_completed"))
+    if m and int(m[2]) > 0:
+        pct = round(100 * int(m[1]) / int(m[2]), 1)
+    level = sysread(base + "/level") or n["type"]
+    loc = sysread(base + "/bitmap/location")
+    return {
+        "path": n["path"], "name": array_name(n["path"]) or n["name"], "level": level, "size": n["size"],
+        "state": sysread(base + "/array_state"), "raid_disks": to_int(sysread(base + "/raid_disks")),
+        "degraded": to_int(sysread(base + "/degraded")), "sync_action": sysread(base + "/sync_action"),
+        "progress": pct, "speed": to_int(sysread(base + "/sync_speed")),
+        "mismatches": to_int(sysread(base + "/mismatch_cnt")),
+        "bitmap": "internal" if loc and loc != "none" else "none",
+        "members": [{"path": p, "state": s, "slot": sl} for p, s, sl in raid_members(n)],
+        "protected": n["protected"], "busy": n["busy"], "mounts": n["subtree_mounts"],
+        "can_stop": not block_reason(inv, n, "wipe"), "can_add": level in RAID_REDUNDANT,
+    }
+
+
+def raid_inventory(inv, out):
+    arrays = [raid_details(inv, inv["nodes"][p]) for p in inv["order"] if inv["nodes"][p]["type"] in RAID_TYPES]
+    alerts = read_alerts()
+    alerts["monitor"] = run(["systemctl", "is-active", "mdmonitor"]).stdout.strip()
+    alerts["sendmail"] = any(Path(p).exists() for p in ("/usr/sbin/sendmail", "/usr/lib/sendmail"))
+    alerts["events"] = recent_events()
+    out["raid"] = {"available": have("mdadm"), "arrays": arrays, "alerts": alerts}
+
+
+def array_node(inv, path):
+    n = inv["nodes"].get(path) if isinstance(path, str) else None
+    need(n is not None and n["type"] in RAID_TYPES, "unknown RAID array")
+    return n
+
+
+def raid_devices(inv, devs, what):
+    need(isinstance(devs, list) and len(set(devs)) == len(devs) and len(devs) <= 16, f"choose the {what}")
+    return [get_dev(inv, d, "blank") for d in devs]
+
+
+@op("raid-create")
+def op_raid_create(inv, a):
+    need(have("mdadm"), "mdadm is not installed (sudo apt install mdadm)")
+    name = a.get("name")
+    need(isinstance(name, str) and MAPPER_RE.fullmatch(name), "the name may use lowercase letters, digits, - and _")
+    need(not os.path.lexists("/dev/md/" + name), "an array with that name already exists")
+    level = a.get("level")
+    need(level in RAID_MIN, "choose RAID 0, 1, 5, 6 or 10")
+    active = raid_devices(inv, a.get("devices") or [], "devices")
+    spares = raid_devices(inv, a.get("spares") or [], "spare devices") if a.get("spares") else []
+    need(not ({n["path"] for n in active} & {n["path"] for n in spares}), "a device can't be both active and a spare")
+    need(len(active) >= RAID_MIN[level], f"RAID {level[4:]} needs at least {RAID_MIN[level]} devices")
+    need(not spares or level in RAID_REDUNDANT, "RAID 0 can't use spares")
+    warns = []
+    if level == "raid0":
+        warns.append("RAID 0 has no redundancy: if any one disk fails, ALL data on the array is lost.")
+    sizes = [n["size"] for n in active]
+    if max(sizes) > min(sizes) * 1.1:
+        warns.append("The devices differ in size: each one is used only up to the size of the smallest.")
+    argv = ["mdadm", "--create", f"/dev/md/{name}", f"--level={level[4:]}", f"--raid-devices={len(active)}",
+            "--metadata=1.2", f"--name={name}", "--run"]
+    if spares:
+        argv.append(f"--spare-devices={len(spares)}")
+    argv += [n["path"] for n in active + spares]
+    steps = [S("wipefs", "-a", n["path"]) for n in active + spares] + [S(*argv)] + settle()
+    steps.append(F("remember the array in /etc/mdadm/mdadm.conf so its name stays stable",
+                   lambda: mdconf_add(f"/dev/md/{name}")))
+    steps.append(initramfs_step())
+    return steps, warns
+
+
+@op("raid-assemble")
+def op_raid_assemble(inv, a):
+    need(have("mdadm"), "mdadm is not installed (sudo apt install mdadm)")
+    return [S("mdadm", "--assemble", "--scan", soft=True)] + settle(), []
+
+
+@op("raid-stop")
+def op_raid_stop(inv, a):
+    n = get_dev(inv, a.get("array"), "wipe")
+    need(n["type"] in RAID_TYPES, "that is not a RAID array")
+    return [S("mdadm", "--stop", n["path"])] + settle(), \
+        ["The array stops but its data stays on the disks. It starts again after a reboot or with Assemble."]
+
+
+@op("raid-remove", destructive=True)
+def op_raid_remove(inv, a):
+    n = get_dev(inv, a.get("array"), "wipe")
+    need(n["type"] in RAID_TYPES, "that is not a RAID array")
+    members = [p for p, _, _ in raid_members(n)]
+    need(members, "could not find the array's devices")
+    uuid = md_uuid(n["path"])
+    steps = [S("wipefs", "-a", n["path"], soft=True), S("mdadm", "--stop", n["path"])]
+    steps += [S("mdadm", "--zero-superblock", m) for m in members]
+    steps.append(F("remove the array from /etc/mdadm/mdadm.conf", lambda: mdconf_remove(uuid)))
+    steps.append(initramfs_step())
+    return steps + settle(), [f"{n['path']} and all the data on it are destroyed. Its devices become blank."]
+
+
+@op("raid-add")
+def op_raid_add(inv, a):
+    arr = array_node(inv, a.get("array"))
+    need(sysread(f"/sys/block/{arr['kname']}/md/level") in RAID_REDUNDANT, "this kind of array can't take another device")
+    d = get_dev(inv, a.get("device"), "blank")
+    return [S("wipefs", "-a", d["path"]), S("mdadm", arr["path"], "--add", d["path"])] + settle(), \
+        ["If the array is missing a device, it starts rebuilding onto this one. Otherwise it becomes a spare."]
+
+
+@op("raid-remove-member", destructive=True)
+def op_raid_remove_member(inv, a):
+    arr = array_node(inv, a.get("array"))
+    dev = a.get("device")
+    member = next(((p, s) for p, s, _ in raid_members(arr) if p == dev), None)
+    need(member is not None, "that device is not a member of this array")
+    faulty = "faulty" in member[1]
+    need(faulty or not arr["protected"], "this array holds the running system. Only a failed device can be removed here")
+    need(sysread(f"/sys/block/{arr['kname']}/md/level") in RAID_REDUNDANT, "this kind of array has no redundancy to give up")
+    steps = [] if faulty else [S("mdadm", arr["path"], "--fail", dev)]
+    steps.append(S("mdadm", arr["path"], "--remove", dev))
+    if a.get("erase", True):
+        steps.append(S("mdadm", "--zero-superblock", dev, soft=True))
+    warns = ["The device is already failed."] if faulty else \
+        ["The array loses redundancy while this device is out. If another device fails before a replacement finishes rebuilding, data can be lost."]
+    return steps + settle(), warns
+
+
+@op("raid-check")
+def op_raid_check(inv, a):
+    arr = array_node(inv, a.get("array"))
+    action = a.get("action")
+    need(action in ("check", "idle"), "choose check or idle")
+    text = "start a read-only consistency check" if action == "check" else "stop the running check"
+    return [F(text, lambda: write_sysfs(f"/sys/block/{arr['kname']}/md/sync_action", action))], []
+
+
+# ---------------- LUKS ----------------
+
+def luks_slots(path):
+    if not have("cryptsetup"):
+        return None
+    r = run(["cryptsetup", "luksDump", "--dump-json-metadata", path])
+    if r.returncode == 0:
+        try:
+            return len(json.loads(r.stdout).get("keyslots", {}))
+        except ValueError:
+            pass
+    r = run(["cryptsetup", "luksDump", path])
+    if r.returncode == 0:
+        return len(re.findall(r"^Key Slot \d+: ENABLED", r.stdout, re.M)) + \
+            len(re.findall(r"^\s+\d+: luks\d", r.stdout, re.M))
+    return None
+
+
+def luks_container(inv, path):
+    n = inv["nodes"].get(path) if isinstance(path, str) else None
+    need(n is not None and n["fstype"] == "crypto_LUKS", "that is not an encrypted container")
+    return n
+
+
+def mapped_of(inv, n):
+    return next((inv["nodes"][c] for c in n["children"] if inv["nodes"][c]["type"] == "crypt"), None)
+
+
+def luks_inventory(inv, out):
+    items = []
+    have_tool = have("cryptsetup")
+    tab = crypttab_entries()
+    for path in inv["order"]:
+        n = inv["nodes"][path]
+        if n["fstype"] != "crypto_LUKS":
+            continue
+        mapped = mapped_of(inv, n)
+        auto = next(((nm, e) for nm, e in tab.items() if n["uuid"] and e["spec"] == "UUID=" + n["uuid"]), None)
+        items.append({
+            "path": path, "size": n["size"], "uuid": n["uuid"], "open": mapped is not None,
+            "mapper": mapped["path"] if mapped else "", "mounts": mapped["subtree_mounts"] if mapped else [],
+            "slots": luks_slots(path) if have_tool else None,
+            "can_close": bool(mapped) and not block_reason(inv, mapped, "wipe"),
+            "system": n["protected"],
+            "autounlock": ({"name": auto[0], "mode": "tpm2" if "tpm2-device" in auto[1]["options"] else "keyfile"}
+                           if auto else None),
+        })
+    out["luks"] = {"available": have_tool, "containers": items,
+                   "tpm2": have("systemd-cryptenroll") and Path("/dev/tpmrm0").exists()}
+
+
+def cryptsetup_two(argv, existing, new):
+    r, w = os.pipe()
+    try:
+        os.write(w, new.encode())
+        os.close(w)
+        w = -1
+        res = run(argv + [f"/dev/fd/{r}"], timeout=300, data=existing, pass_fds=(r,))
+    finally:
+        if w != -1:
+            os.close(w)
+        os.close(r)
+    if res.returncode != 0:
+        raise Bad((res.stderr or res.stdout).strip()[:300] or "cryptsetup failed")
+
+
+@op("luks-format", destructive=True)
+def op_luks_format(inv, a):
+    need(have("cryptsetup"), "cryptsetup is not installed (sudo apt install cryptsetup)")
+    n = get_dev(inv, a.get("device"), "format")
+    pw = secret(a, "passphrase", "passphrase", 12, 512)
+    steps = [S("wipefs", "-a", n["path"]),
+             S("cryptsetup", "luksFormat", "--type", "luks2", "--batch-mode", "--key-file=-", n["path"], data=pw)] + settle()
+    return steps, [f"Everything on {n['path']} will be destroyed.",
+                   "If you lose this passphrase, the data cannot be recovered by anyone."]
+
+
+@op("luks-open")
+def op_luks_open(inv, a):
+    need(have("cryptsetup"), "cryptsetup is not installed (sudo apt install cryptsetup)")
+    n = luks_container(inv, a.get("device"))
+    need(mapped_of(inv, n) is None, "it is already unlocked")
+    name = a.get("name")
+    need(isinstance(name, str) and MAPPER_RE.fullmatch(name), "the name may use lowercase letters, digits, - and _")
+    need(not os.path.lexists("/dev/mapper/" + name), "that name is already in use")
+    pw = secret(a, "passphrase", "passphrase", 1, 512)
+    return [S("cryptsetup", "open", "--type", "luks", "--key-file=-", n["path"], name, data=pw)] + settle(), []
+
+
+@op("luks-close")
+def op_luks_close(inv, a):
+    n = get_dev(inv, a.get("device"), "wipe")
+    need(n["type"] == "crypt", "that is not an unlocked encrypted volume")
+    return [S("cryptsetup", "close", n["name"])] + settle(), []
+
+
+@op("luks-addkey")
+def op_luks_addkey(inv, a):
+    n = luks_container(inv, a.get("device"))
+    old = secret(a, "passphrase", "current passphrase", 1, 512)
+    new = secret(a, "new_passphrase", "new passphrase", 12, 512)
+    slots = luks_slots(n["path"])
+    need(slots is None or slots < 8, "this volume already has the maximum number of passphrases")
+    return [F("add the new passphrase to the volume",
+              lambda: cryptsetup_two(["cryptsetup", "luksAddKey", "--key-file=-", n["path"]], old, new))], []
+
+
+@op("luks-removekey", destructive=True)
+def op_luks_removekey(inv, a):
+    n = luks_container(inv, a.get("device"))
+    pw = secret(a, "passphrase", "passphrase to remove", 1, 512)
+    keep = secret(a, "keep_passphrase", "passphrase to keep", 1, 512)
+    need(not (pw == keep and pw != "placeholder"), "the passphrase to keep must be a different one")
+    slots = luks_slots(n["path"])
+    need(slots is not None, "could not read the key slots, so nothing was removed")
+    need(slots >= 2, "this is the only passphrase. Add another one before removing it")
+    path = n["path"]
+    steps = [F("check that the passphrase you keep really unlocks the volume",
+               lambda: need(test_passphrase(path, keep), "the passphrase to keep does not unlock this volume. Nothing was changed")),
+             S("cryptsetup", "luksRemoveKey", "--batch-mode", "--key-file=-", path, data=pw)]
+    warns = ["The passphrase you enter stops working."]
+    if n["protected"]:
+        warns.append("This volume holds the running system. Make sure the passphrase you keep is the one you will type at boot.")
+    return steps, warns
+
+
+# ---------------- iSCSI ----------------
+
+def parse_portal(s):
+    s = s.strip() if isinstance(s, str) else ""
+    m = re.fullmatch(r"\[([0-9A-Fa-f:]+)\](?::(\d{1,5}))?", s)
+    if m:
+        try:
+            ipaddress.IPv6Address(m[1])
+        except ValueError:
+            raise Bad("invalid IPv6 address")
+        host, port = f"[{m[1]}]", m[2] or ""
+    else:
+        host, port = s, ""
+        if s.count(":") == 1:
+            host, port = s.split(":")
+        need(host != "" and (port == "" or port.isdigit()), "enter an address like 192.168.1.50 or 192.168.1.50:3260")
+        try:
+            ip = ipaddress.ip_address(host)
+            need(ip.version == 4 and not (ip.is_multicast or ip.is_unspecified), "that isn't a usable server address")
+        except ValueError:
+            need(HOSTNAME_RE.fullmatch(host) is not None, "invalid server address")
+    port = int(port) if port else 3260
+    need(1 <= port <= 65535, "invalid port")
+    return host, port
+
+
+def iscsi_nodes():
+    r = run(["iscsiadm", "-m", "node", "-o", "show"])
+    out, cur = [], None
+    if r.returncode != 0:
+        return out
+    for line in r.stdout.splitlines():
+        if line.startswith("# BEGIN RECORD"):
+            cur = {}
+        elif line.startswith("# END RECORD"):
+            if cur and cur.get("node.name"):
+                addr = cur.get("node.conn[0].address", "")
+                if ":" in addr and not addr.startswith("["):
+                    addr = f"[{addr}]"
+                item = {"iqn": cur["node.name"], "portal": f"{addr}:{cur.get('node.conn[0].port', '3260')}",
+                        "startup": cur.get("node.startup", ""),
+                        "iface": cur.get("iface.iscsi_ifacename", "default"),
+                        "auth": cur.get("node.session.auth.authmethod", ""),
+                        "user": cur.get("node.session.auth.username", ""),
+                        "mutual": bool(cur.get("node.session.auth.username_in", ""))}
+                if item not in out:
+                    out.append(item)
+            cur = None
+        elif cur is not None and " = " in line:
+            k, v = line.split(" = ", 1)
+            cur[k.strip()] = v.strip()
+    return out
+
+
+def iscsi_sessions():
+    r = run(["iscsiadm", "-m", "session", "-P", "3"])
+    out, iqn, cur = [], "", None
+    if r.returncode != 0:
+        return out
+    for line in r.stdout.splitlines():
+        s = line.strip()
+        m = re.match(r"Target:\s+(\S+)", s)
+        if m:
+            iqn, cur = m[1], None
+            continue
+        m = re.match(r"Current Portal:\s+(.+?),\d+$", s)
+        if m:
+            cur = {"iqn": iqn, "portal": m[1], "state": "", "iface": "default", "transport": "tcp", "disks": []}
+            out.append(cur)
+            continue
+        if cur is None:
+            continue
+        m = re.match(r"iSCSI Session State:\s+(.+)", s)
+        if m:
+            cur["state"] = m[1]
+        m = re.match(r"Iface Name:\s+(\S+)", s)
+        if m:
+            cur["iface"] = m[1]
+        m = re.match(r"Iface Transport:\s+(\S+)", s)
+        if m:
+            cur["transport"] = m[1]
+        m = re.match(r"Attached scsi disk (\S+)", s)
+        if m:
+            cur["disks"].append("/dev/" + m[1])
+    return out
+
+
+def iscsi_inventory(inv, out):
+    info = {"available": have("iscsiadm"), "initiator": "", "nodes": [], "sessions": [],
+            "iser": {"ok": False, "reason": "", "devices": []}}
+    try:
+        try:
+            for line in Path("/etc/iscsi/initiatorname.iscsi").read_text().splitlines():
+                if line.startswith("InitiatorName="):
+                    info["initiator"] = line.split("=", 1)[1].strip()
+        except OSError:
+            pass
+        info["iser"] = iser_state()
+        if info["available"]:
+            info["nodes"] = iscsi_nodes()
+            for s in iscsi_sessions():
+                disks = []
+                for d in s["disks"]:
+                    n = inv["nodes"].get(d)
+                    if n:
+                        disks.append({"path": d, "size": n["size"], "busy": n["busy"], "mounts": n["subtree_mounts"],
+                                      "protected": n["protected"], "redundant": multipath_redundant(inv, n)})
+                s["disks"] = disks
+                s["can_logout"] = all(d["redundant"] or not (d["protected"] or d["busy"]) for d in disks)
+                info["sessions"].append(s)
+    except Exception as e:
+        info["error"] = str(e)[:200]
+    out["iscsi"] = info
+
+
+def node_exists(iqn, portal, iface="default"):
+    return run(["iscsiadm", "-m", "node", "-T", iqn, "-p", portal, "-I", iface]).returncode == 0
+
+
+def node_file(iqn, host, port, iface="default"):
+    h = host.strip("[]")
+    for root in ("/etc/iscsi/nodes", "/var/lib/iscsi/nodes"):
+        d = Path(root) / iqn
+        if d.is_dir():
+            for sub in sorted(d.iterdir()):
+                if sub.name.startswith(f"{h},{port},") and (sub / iface).is_file():
+                    return sub / iface
+    return None
+
+
+def set_chap(iqn, host, port, user, pw, user_in="", pw_in="", iface="default"):
+    f = node_file(iqn, host, port, iface)
+    need(f is not None, "could not find the stored target record to add the login to")
+    write_auth(f, {AUTH_KEYS[0]: "CHAP", AUTH_KEYS[1]: user, AUTH_KEYS[2]: pw,
+                   AUTH_KEYS[3]: user_in, AUTH_KEYS[4]: pw_in})
+
+
+def cmd_iscsi_discover():
+    need(have("iscsiadm"), "open-iscsi is not installed (sudo apt install open-iscsi)")
+    try:
+        req = json.loads(sys.stdin.read(8192))
+    except ValueError:
+        raise Bad("invalid request")
+    need(isinstance(req, dict), "invalid request")
+    host, port = parse_portal(req.get("portal"))
+    iface = iface_of(req)
+    if iface == "iser":
+        st = iser_state()
+        need(st["ok"], "iSER isn't available: " + st["reason"])
+    portal = f"{host}:{port}"
+    keyvals = {}
+    auth = req.get("auth")
+    if auth:
+        need(isinstance(auth, dict), "invalid login")
+        u, p = auth.get("user") or "", auth.get("password") or ""
+        ui, pi = auth.get("user_in") or "", auth.get("password_in") or ""
+        need(isinstance(u, str) and CHAP_USER_RE.fullmatch(u), "the discovery user name may use letters, digits and . _ @ : -")
+        need(isinstance(p, str) and CHAP_PASS_RE.fullmatch(p), "the discovery password must be 1 to 128 visible characters without spaces")
+        keyvals = {"discovery.sendtargets.auth.authmethod": "CHAP",
+                   "discovery.sendtargets.auth.username": u, "discovery.sendtargets.auth.password": p}
+        if ui or pi:
+            need(isinstance(ui, str) and CHAP_USER_RE.fullmatch(ui), "the mutual user name may use letters, digits and . _ @ : -")
+            need(isinstance(pi, str) and CHAP_PASS_RE.fullmatch(pi), "the mutual password must be 1 to 128 visible characters without spaces")
+            need(pi != p, "the mutual password must differ from the discovery password")
+            keyvals["discovery.sendtargets.auth.username_in"] = ui
+            keyvals["discovery.sendtargets.auth.password_in"] = pi
+    db = ["iscsiadm", "-m", "discoverydb", "-t", "sendtargets", "-p", portal] + (["-I", iface] if iface != "default" else [])
+    existed = run(db + ["-o", "show"]).returncode == 0
+    created = False
+    try:
+        need(not (keyvals and existed),
+             "a saved discovery record already exists for that address. Delete it from the console, or discover without credentials")
+        if not existed:
+            r = run(db + ["-o", "new"])
+            need(r.returncode == 0, "could not prepare discovery: " + (r.stderr or r.stdout).strip()[:200])
+            created = True
+        if keyvals:
+            f = st_file(host, port)
+            need(f is not None, "could not find the discovery record to add the login to")
+            write_auth(f, keyvals)
+        r = run(db + ["--discover", "-o", "nonpersistent"], timeout=60)
+        if r.returncode != 0 and "nonpersistent" in (r.stderr or "").lower():
+            r = run(db + ["--discover"], timeout=60)
+        need(r.returncode == 0, "discovery failed: " + ((r.stderr or r.stdout).strip()[:300] or "no answer"))
+    finally:
+        if created:
+            run(db + ["-o", "delete"])
+    targets = []
+    for line in r.stdout.splitlines():
+        m = re.fullmatch(r"(\S+),(\d+)\s+(\S+)", line.strip())
+        if m and IQN_RE.fullmatch(m[3]):
+            targets.append({"portal": m[1], "tpgt": int(m[2]), "iqn": m[3]})
+    print(json.dumps({"targets": targets}))
+
+
+def iscsi_target(a):
+    need(have("iscsiadm"), "open-iscsi is not installed (sudo apt install open-iscsi)")
+    iqn = a.get("iqn")
+    need(isinstance(iqn, str) and IQN_RE.fullmatch(iqn), "invalid target name")
+    host, port = parse_portal(a.get("portal"))
+    return iqn, host, port, f"{host}:{port}"
+
+
+@op("iscsi-login")
+def op_iscsi_login(inv, a):
+    iqn, host, port, portal = iscsi_target(a)
+    iface = iface_of(a)
+    if iface == "iser":
+        st = iser_state()
+        need(st["ok"], "iSER isn't available: " + st["reason"])
+    need(not any(s["iqn"] == iqn and s["portal"] == portal and s["iface"] == iface for s in iscsi_sessions()),
+         "already connected over that path")
+    copy_portal, copy_iface = a.get("copy_portal") or "", a.get("copy_iface") or "default"
+    user, pw = a.get("chap_user") or "", a.get("chap_pass") or ""
+    user_in, pw_in = a.get("chap_user_in") or "", a.get("chap_pass_in") or ""
+    if copy_portal:
+        need(isinstance(copy_portal, str) and copy_iface in ("default", "iser"), "invalid login source")
+        parse_portal(copy_portal)
+    use_chap = bool(user or pw or user_in or pw_in)
+    need(not (copy_portal and use_chap), "choose either the same login as an existing path, or new credentials")
+    if use_chap:
+        need(isinstance(user, str) and CHAP_USER_RE.fullmatch(user), "the CHAP user name may use letters, digits and . _ @ : -")
+        if MODE["m"] == "apply" or pw:
+            need(isinstance(pw, str) and CHAP_PASS_RE.fullmatch(pw), "the CHAP password must be 1 to 128 visible characters without spaces")
+        if user_in or pw_in:
+            need(isinstance(user_in, str) and CHAP_USER_RE.fullmatch(user_in), "the mutual CHAP user name may use letters, digits and . _ @ : -")
+            if MODE["m"] == "apply" or pw_in:
+                need(isinstance(pw_in, str) and CHAP_PASS_RE.fullmatch(pw_in), "the mutual CHAP password must be 1 to 128 visible characters without spaces")
+                need(pw_in != pw, "the mutual CHAP password must differ from the CHAP password")
+    base = ["iscsiadm", "-m", "node", "-T", iqn, "-p", portal, "-I", iface]
+    steps = [S("systemctl", "start", "iscsid", soft=True)]
+    if iface == "iser":
+        steps += [S("modprobe", "ib_iser", soft=True), S("iscsiadm", "-m", "iface", "-I", "iser", "-o", "new", soft=True),
+                  S("iscsiadm", "-m", "iface", "-I", "iser", "-o", "update", "-n", "iface.transport_name", "-v", "iser")]
+    if not node_exists(iqn, portal, iface):
+        steps.append(S(*base, "-o", "new"))
+    if copy_portal:
+        steps.append(F("copy the saved login from the existing path",
+                       lambda: copy_login(iqn, host, port, iface, copy_portal, copy_iface)))
+    elif use_chap:
+        steps.append(F("store the CHAP login for this path (root-only file)",
+                       lambda: set_chap(iqn, host, port, user, pw, user_in, pw_in, iface)))
+    else:
+        steps.append(S(*base, "-o", "update", "-n", "node.session.auth.authmethod", "-v", "None"))
+    steps.append(S(*base, "-o", "update", "-n", "node.startup", "-v", "automatic" if a.get("auto") else "manual"))
+    steps.append(S(*base, "--login"))
+    return steps + settle(), ["The target's disks appear as new devices on the Disks tab."]
+
+
+@op("iscsi-logout")
+def op_iscsi_logout(inv, a):
+    iqn, host, port, portal = iscsi_target(a)
+    iface = iface_of(a)
+    sess = next((s for s in iscsi_sessions() if s["iqn"] == iqn and s["portal"] == portal and s["iface"] == iface), None)
+    need(sess is not None, "that connection isn't active")
+    warns = []
+    for d in sess["disks"]:
+        n = inv["nodes"].get(d)
+        if not n:
+            continue
+        if multipath_redundant(inv, n):
+            warns.append(f"{d} belongs to a multipath device that has other paths, so I/O continues over them.")
+            continue
+        need(not n["protected"], f"{d} holds the running system")
+        need(not n["busy"], f"{d} is in use ({'; '.join(n['busy'])}). Unmount or release it first")
+    node = ["iscsiadm", "-m", "node", "-T", iqn, "-p", portal, "-I", iface]
+    steps = [S(*node, "--logout")]
+    if a.get("forget"):
+        steps.append(S(*node, "-o", "delete"))
+    return steps + settle(), warns
+
+
+@op("iscsi-forget")
+def op_iscsi_forget(inv, a):
+    iqn, host, port, portal = iscsi_target(a)
+    iface = iface_of(a)
+    need(not any(s["iqn"] == iqn and s["portal"] == portal and s["iface"] == iface for s in iscsi_sessions()),
+         "disconnect it first")
+    return [S("iscsiadm", "-m", "node", "-T", iqn, "-p", portal, "-I", iface, "-o", "delete")], []
+
+
+@op("iscsi-startup")
+def op_iscsi_startup(inv, a):
+    iqn, host, port, portal = iscsi_target(a)
+    iface = iface_of(a)
+    need(a.get("mode") in ("automatic", "manual"), "choose automatic or manual")
+    return [S("iscsiadm", "-m", "node", "-T", iqn, "-p", portal, "-I", iface, "-o", "update",
+              "-n", "node.startup", "-v", a["mode"])], []
+
+
+INVENTORY_EXTRAS.extend([raid_inventory, luks_inventory, iscsi_inventory])
+
+
+# ---- storage part 3a ----
+import base64, gzip, secrets, time
+
+HELPER = "/usr/local/sbin/adminpanel-disk"
+JOBS_DIR = STATE_DIR / "disk-jobs"
+JOB_ID_RE = re.compile(r"[0-9a-f]{12}")
+EVENTS_LOG = STATE_DIR / "storage-events.log"
+EVENT_PROGRAM = Path("/usr/local/sbin/adminpanel-md-event")
+CRYPTTAB = Path("/etc/crypttab")
+CRYPTTAB_BAK = Path("/etc/crypttab.adminpanel.bak")
+KEYDIR = Path("/etc/cryptsetup-keys.d")
+CRYPT_TAG = "# adminpanel-managed"
+ALERTS_BEGIN = "# BEGIN adminpanel alerts"
+ALERTS_END = "# END adminpanel alerts"
+DISABLED_PREFIX = "#adminpanel-disabled# "
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,200}\.[A-Za-z]{2,24}")
+ERASE_METHODS = {"zero": ("zero",), "random": ("random",), "random-zero": ("random", "zero")}
+CHUNK = 4 * 1024 * 1024
+EXTRA = {}
+IGNORE_JOB = {"id": None}
+
+PROGRAM_TEXT = """#!/bin/sh
+# Installed by the admin panel. mdadm --monitor calls it as: program EVENT ARRAY [DEVICE]
+ev=$(printf '%s' "$1" | tr -cd 'A-Za-z0-9_.-')
+md=$(printf '%s' "$2" | tr -cd 'A-Za-z0-9/_.:-')
+dv=$(printf '%s' "$3" | tr -cd 'A-Za-z0-9/_.:-')
+printf '{"ts":%s,"event":"%s","array":"%s","device":"%s"}\\n' "$(date +%s)" "$ev" "$md" "$dv" >> /var/lib/adminpanel/storage-events.log
+logger -t mdadm-event -p daemon.warning "$ev $md $dv"
+exit 0
+"""
+
+
+# ---------------- shared helpers ----------------
+
+def read_json(p, default):
+    try:
+        return json.loads(Path(p).read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def run_keyfd(make_argv, key, data=None):
+    r, w = os.pipe()
+    try:
+        os.write(w, key.encode())
+        os.close(w)
+        w = -1
+        res = run(make_argv(f"/dev/fd/{r}"), timeout=300, data=data, pass_fds=(r,))
+    finally:
+        if w != -1:
+            os.close(w)
+        os.close(r)
+    if res.returncode != 0:
+        raise Bad((res.stderr or res.stdout).strip()[:300] or "the command failed")
+    return res
+
+
+def test_passphrase(path, pw):
+    return run(["cryptsetup", "open", "--test-passphrase", "--key-file=-", path], timeout=120, data=pw).returncode == 0
+
+
+def initramfs_step():
+    if have("update-initramfs"):
+        return S("update-initramfs", "-u", soft=True)
+    return F("skip the boot image update (update-initramfs is not available)", lambda: None)
+
+
+# ---------------- background jobs and secure erase ----------------
+
+class Cancelled(Exception):
+    pass
+
+
+def job_path(jid, ext="json"):
+    return JOBS_DIR / f"{jid}.{ext}"
+
+
+def save_job(job):
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(JOBS_DIR, 0o700)
+    atomic_write(job_path(job["id"]), json.dumps(job), 0o600)
+
+
+def refresh_job(job):
+    if job.get("status") in ("queued", "running") and time.time() - job.get("started", 0) > 15:
+        state = run(["systemctl", "is-active", f"adminpanel-disk-job-{job['id']}"]).stdout.strip()
+        if state not in ("active", "activating"):
+            job.update(status="failed", finished=int(time.time()),
+                       message="interrupted (the server restarted or the job was stopped)")
+            save_job(job)
+    return job
+
+
+def all_jobs():
+    out = []
+    if JOBS_DIR.is_dir():
+        for f in JOBS_DIR.glob("*.json"):
+            if JOB_ID_RE.fullmatch(f.stem):
+                j = read_json(f, None)
+                if isinstance(j, dict) and j.get("id") == f.stem:
+                    out.append(refresh_job(j))
+    out.sort(key=lambda j: j.get("started", 0), reverse=True)
+    return out
+
+
+def extra_busy_map():
+    m = {}
+    for j in all_jobs():
+        if j.get("status") in ("queued", "running") and j.get("id") != IGNORE_JOB["id"]:
+            m.setdefault(os.path.realpath(j.get("device", "")), []).append(
+                f"a secure erase is running ({j.get('method')})")
+    return m
+
+
+def dev_size(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        return os.lseek(fd, 0, os.SEEK_END)
+    finally:
+        os.close(fd)
+
+
+def start_job(spec):
+    jid = secrets.token_hex(6)
+    job = {"id": jid, "kind": "overwrite", "device": spec["device"], "method": spec["method"],
+           "total": spec["total"], "done": 0, "pass": 0, "passes": len(ERASE_METHODS[spec["method"]]),
+           "status": "queued", "started": int(time.time()), "finished": 0, "message": ""}
+    save_job(job)
+    r = run(["systemd-run", "--quiet", f"--unit=adminpanel-disk-job-{jid}", "--collect",
+             "--property=Nice=10", "--property=IOSchedulingClass=idle", HELPER, "run-job", jid])
+    if r.returncode != 0:
+        job.update(status="failed", message=(r.stderr or "").strip()[:200], finished=int(time.time()))
+        save_job(job)
+        raise Bad("could not start the background job: " + (r.stderr or "").strip()[:200])
+    return f"started background job {jid}: {spec['desc']}. Progress is shown on the Disks tab."
+
+
+def overwrite_device(job):
+    passes = ERASE_METHODS[job["method"]]
+    total = dev_size(job["device"])
+    job["total"] = total * len(passes)
+    fd = os.open(job["device"], os.O_WRONLY)
+    try:
+        zero = bytes(CHUNK)
+        base = 0
+        for i, kind in enumerate(passes, 1):
+            job["pass"] = i
+            os.lseek(fd, 0, os.SEEK_SET)
+            pos, last = 0, 0.0
+            while pos < total:
+                if job_path(job["id"], "cancel").exists():
+                    raise Cancelled()
+                n = min(CHUNK, total - pos)
+                view = memoryview(zero[:n] if kind == "zero" else os.urandom(n))
+                while len(view):
+                    view = view[os.write(fd, view):]
+                pos += n
+                job["done"] = base + pos
+                if (pos // CHUNK) % 64 == 0:
+                    os.fdatasync(fd)
+                now = time.time()
+                if now - last > 2:
+                    save_job(job)
+                    last = now
+            os.fsync(fd)
+            base += total
+    finally:
+        os.close(fd)
+
+
+def cmd_run_job():
+    jid = sys.argv[2] if len(sys.argv) == 3 else ""
+    need(JOB_ID_RE.fullmatch(jid) is not None, "invalid job")
+    job = read_json(job_path(jid), None)
+    need(isinstance(job, dict) and job.get("status") == "queued", "no such queued job")
+    syslog.openlog("adminpanel-disk")
+    try:
+        with Lock():
+            IGNORE_JOB["id"] = jid
+            get_dev(build_inventory(), job["device"], "wipe")
+            job["status"] = "running"
+            save_job(job)
+        syslog.syslog(syslog.LOG_NOTICE, f"job {jid} started: {job['method']} on {job['device']}")
+        overwrite_device(job)
+        job["status"] = "done"
+        job["done"] = job["total"]
+    except Cancelled:
+        job["status"], job["message"] = "cancelled", "Stopped by you. The device is partly overwritten."
+    except Bad as e:
+        job["status"], job["message"] = "failed", str(e)[:300]
+    except Exception as e:
+        job["status"], job["message"] = "failed", f"{type(e).__name__}: {e}"[:300]
+    job["finished"] = int(time.time())
+    save_job(job)
+    job_path(jid, "cancel").unlink(missing_ok=True)
+    run(["partprobe", job["device"]])
+    run(["udevadm", "settle"])
+    syslog.syslog(syslog.LOG_NOTICE, f"job {jid} {job['status']}")
+
+
+def cmd_jobs():
+    jobs = all_jobs()
+    cutoff = time.time() - 7 * 86400
+    for j in list(jobs):
+        if j.get("finished") and j["finished"] < cutoff:
+            job_path(j["id"]).unlink(missing_ok=True)
+            job_path(j["id"], "cancel").unlink(missing_ok=True)
+            jobs.remove(j)
+    print(json.dumps({"jobs": jobs[:15]}))
+
+
+def cmd_job_cancel():
+    try:
+        req = json.loads(sys.stdin.read(512))
+    except ValueError:
+        raise Bad("invalid request")
+    jid = req.get("id") if isinstance(req, dict) else None
+    need(isinstance(jid, str) and JOB_ID_RE.fullmatch(jid) is not None, "invalid job")
+    job = read_json(job_path(jid), None)
+    need(isinstance(job, dict) and job.get("status") in ("queued", "running"), "that job isn't running")
+    job_path(jid, "cancel").write_text("1")
+    syslog.openlog("adminpanel-disk")
+    syslog.syslog(syslog.LOG_NOTICE, f"job {jid} cancel requested")
+    print(json.dumps({"ok": True}))
+
+
+@op("secure-erase", destructive=True)
+def op_secure_erase(inv, a):
+    n = get_dev(inv, a.get("device"), "wipe")
+    method, path = a.get("method"), n["path"]
+    disk_path = path if n["type"] == "disk" else None
+    if method == "crypto":
+        need(have("cryptsetup"), "cryptsetup is not installed (sudo apt install cryptsetup)")
+        need(n["fstype"] == "crypto_LUKS", "crypto-erase works only on an encrypted (LUKS) container")
+        return ([S("cryptsetup", "erase", "--batch-mode", path), S("wipefs", "-a", path)] + settle(disk_path),
+                ["Every passphrase and key is destroyed, so the data cannot be decrypted by anyone. "
+                 "That is only true if no copy of the header or of a key exists anywhere else, such as a header backup."])
+    if method in ("discard", "secure-discard"):
+        need(have("blkdiscard"), "blkdiscard is not installed")
+        need(n["disc_max"] > 0, "this device does not support discard (TRIM)")
+        argv = ["blkdiscard", "-f"] + (["-s"] if method == "secure-discard" else []) + [path]
+        warns = (["The device erases the blocks itself. If it does not support secure discard, this step fails and nothing is erased."]
+                 if method == "secure-discard" else
+                 ["Discard only tells the device the blocks are unused. Whether the old data is really gone depends on the device. Use secure discard or an overwrite for certainty."])
+        return [S(*argv)] + settle(disk_path), warns
+    need(method in ERASE_METHODS, "choose an erase method")
+    passes = ERASE_METHODS[method]
+    total = dev_size(path)
+    need(total > 0, "could not read the device size")
+    desc = f"overwrite {path} ({len(passes)} pass{'es' if len(passes) > 1 else ''}: {' then '.join(passes)})"
+    step = {"job": {"device": path, "method": method, "total": total * len(passes), "desc": desc},
+            "desc": desc + ", running in the background with progress on the Disks tab"}
+    warns = [f"{path} will be overwritten completely. It takes as long as writing the whole device {len(passes)} time(s)."]
+    if not n["rota"]:
+        warns.append("This looks like an SSD or flash device. Overwriting does NOT reliably erase these, because wear levelling keeps old copies of the data. Prefer secure discard, or encryption plus crypto-erase.")
+    return [step], warns
+
+
+# ---------------- growing a filesystem ----------------
+
+def fsgrow_ok(n):
+    fs = n["fstype"]
+    return fs in ("ext2", "ext3", "ext4") or (fs in ("xfs", "btrfs") and bool(n["mounts"]))
+
+
+@op("fs-grow")
+def op_fs_grow(inv, a):
+    path = a.get("device")
+    n = inv["nodes"].get(path) if isinstance(path, str) else None
+    need(n is not None and fsgrow_ok(n), "this filesystem can't be grown here (XFS and Btrfs must be mounted)")
+    fs = n["fstype"]
+    if fs.startswith("ext"):
+        need(have("resize2fs"), "resize2fs is not installed (sudo apt install e2fsprogs)")
+        steps = [] if n["mounts"] else [S("e2fsck", "-f", "-p", n["path"])]
+        return steps + [S("resize2fs", n["path"])], []
+    mp = n["mounts"][0]
+    if fs == "xfs":
+        need(have("xfs_growfs"), "xfs_growfs is not installed (sudo apt install xfsprogs)")
+        return [S("xfs_growfs", mp)], []
+    return [S("btrfs", "filesystem", "resize", "max", mp)], []
+
+
+# ---------------- RAID: growing, converting, bitmap and alerts ----------------
+
+@op("raid-grow")
+def op_raid_grow(inv, a):
+    need(have("mdadm"), "mdadm is not installed (sudo apt install mdadm)")
+    arr = array_node(inv, a.get("array"))
+    base = f"/sys/block/{arr['kname']}/md"
+    level, current = sysread(base + "/level"), to_int(sysread(base + "/raid_disks"))
+    need(sysread(base + "/sync_action") == "idle", "wait for the current rebuild, check or reshape to finish first")
+    need(to_int(sysread(base + "/degraded")) == 0, "the array is degraded. Replace the failed device before growing it")
+    mode = a.get("mode")
+    warns = ["Growing or converting an array rewrites all of its data in the background. It can take hours or days, "
+             "the array stays usable, and a power failure during the process is a real risk. Have a backup first."]
+    backup_path = f"/var/lib/adminpanel/mdgrow-{arr['kname']}.backup"
+    backup = [f"--backup-file={backup_path}"] if a.get("backup") else []
+    steps = []
+    if backup:
+        steps.append(F("remove any old backup file", lambda: Path(backup_path).unlink(missing_ok=True)))
+    if mode == "devices":
+        need(level in ("raid1", "raid5", "raid6"), "adding devices is supported for RAID 1, 5 and 6")
+        new = raid_devices(inv, a.get("devices") or [], "devices to add")
+        need(new, "choose at least one device to add")
+        total = current + len(new)
+        need(total <= 16, "an array can have at most 16 devices")
+        steps += [S("wipefs", "-a", d["path"]) for d in new]
+        steps += [S("mdadm", arr["path"], "--add", *[d["path"] for d in new]),
+                  S("mdadm", "--grow", arr["path"], f"--raid-devices={total}", *backup)]
+    elif mode == "size":
+        need(level in ("raid1", "raid5", "raid6", "raid10"), "this kind of array can't be resized this way")
+        steps.append(S("mdadm", "--grow", arr["path"], "--size=max"))
+        warns = ["Use this after the devices underneath were enlarged. The array then uses the extra space and resyncs the new part. "
+                 "Afterwards, grow the filesystem on it."]
+    elif mode == "level":
+        target = a.get("level")
+        if level == "raid1" and target == "raid5":
+            need(current == 2, "RAID 1 can only be converted when it has exactly 2 devices")
+            steps.append(S("mdadm", "--grow", arr["path"], "--level=5", *backup))
+            warns.append("The result is a 2-device RAID 5. Add a device afterwards to gain capacity.")
+        elif level == "raid5" and target == "raid6":
+            new = raid_devices(inv, a.get("devices") or [], "device to add")
+            need(len(new) >= 1, "RAID 6 needs at least one more device")
+            total = current + len(new)
+            steps += [S("wipefs", "-a", d["path"]) for d in new]
+            steps += [S("mdadm", arr["path"], "--add", *[d["path"] for d in new]),
+                      S("mdadm", "--grow", arr["path"], "--level=6", f"--raid-devices={total}", *backup)]
+        else:
+            raise Bad("the supported conversions are RAID 1 to RAID 5 and RAID 5 to RAID 6")
+    else:
+        raise Bad("choose what to do with the array")
+    return steps, warns
+
+
+@op("raid-bitmap")
+def op_raid_bitmap(inv, a):
+    need(have("mdadm"), "mdadm is not installed (sudo apt install mdadm)")
+    arr = array_node(inv, a.get("array"))
+    need(sysread(f"/sys/block/{arr['kname']}/md/level") in RAID_REDUNDANT,
+         "only mirrored and parity arrays have a write-intent bitmap")
+    mode = a.get("mode")
+    need(mode in ("internal", "none"), "choose internal or none")
+    argv = ["mdadm", "--grow", arr["path"], f"--bitmap={mode}"]
+    chunk = a.get("chunk_mib")
+    if mode == "internal" and chunk not in (None, ""):
+        need(isinstance(chunk, int) and not isinstance(chunk, bool) and chunk in (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024),
+             "the chunk size must be a power of two from 1 to 1024 MiB")
+        argv.append(f"--bitmap-chunk={chunk}M")
+    return [S(*argv)], (["A bitmap makes a resync after a crash or a briefly missing disk much faster. It costs a little write speed."]
+                        if mode == "internal" else ["Without a bitmap, a crash or a re-added disk triggers a full resync."])
+
+
+def read_alerts():
+    info = {"enabled": False, "email": ""}
+    try:
+        text = MDCONF.read_text()
+    except OSError:
+        return info
+    m = re.search(r"^" + re.escape(ALERTS_BEGIN) + r"\n(.*?)^" + re.escape(ALERTS_END), text, re.M | re.S)
+    if m:
+        info["enabled"] = True
+        for line in m[1].splitlines():
+            if line.startswith("MAILADDR "):
+                info["email"] = line.split(None, 1)[1].strip()
+    return info
+
+
+def recent_events(limit=12):
+    try:
+        if EVENTS_LOG.stat().st_size > 500_000:
+            tail = EVENTS_LOG.read_text().splitlines()[-1000:]
+            atomic_write(EVENTS_LOG, "\n".join(tail) + "\n", 0o644)
+        lines = EVENTS_LOG.read_text().splitlines()[-200:]
+    except OSError:
+        return []
+    out = []
+    for l in reversed(lines):
+        try:
+            out.append(json.loads(l))
+        except ValueError:
+            continue
+        if len(out) >= limit:
+            break
+    return out
+
+
+def install_event_program():
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    atomic_write(EVENT_PROGRAM, PROGRAM_TEXT, 0o755)
+
+
+def mdconf_alerts(email):
+    MDCONF.parent.mkdir(parents=True, exist_ok=True)
+    lines = MDCONF.read_text().splitlines() if MDCONF.exists() else []
+    out, skip = [], False
+    for l in lines:
+        if l.strip() == ALERTS_BEGIN:
+            skip = True
+            continue
+        if l.strip() == ALERTS_END:
+            skip = False
+            continue
+        if skip:
+            continue
+        out.append(l[len(DISABLED_PREFIX):] if l.startswith(DISABLED_PREFIX) else l)
+    need(not skip, "/etc/mdadm/mdadm.conf has an unfinished panel block. Fix it by hand first")
+    if email is not None:
+        out = [(DISABLED_PREFIX + l) if re.match(r"\s*(MAILADDR|PROGRAM)\b", l) else l for l in out]
+        out += [ALERTS_BEGIN] + ([f"MAILADDR {email}"] if email else []) + [f"PROGRAM {EVENT_PROGRAM}", ALERTS_END]
+    atomic_write(MDCONF, "\n".join(out) + "\n", 0o644)
+
+
+@op("raid-alerts")
+def op_raid_alerts(inv, a):
+    need(have("mdadm"), "mdadm is not installed (sudo apt install mdadm)")
+    email = (a.get("email") or "").strip() if isinstance(a.get("email"), str) else ""
+    if a.get("enable"):
+        need(email == "" or EMAIL_RE.fullmatch(email) is not None, "enter a valid e-mail address, or leave it empty for panel-only alerts")
+        steps = [F("install the alert program /usr/local/sbin/adminpanel-md-event", install_event_program),
+                 F("write the alert settings into /etc/mdadm/mdadm.conf (existing MAILADDR and PROGRAM lines are commented out, not deleted)",
+                   lambda: mdconf_alerts(email)),
+                 S("systemctl", "enable", "mdmonitor", soft=True), S("systemctl", "restart", "mdmonitor", soft=True)]
+        warns = []
+        if email and not any(Path(p).exists() for p in ("/usr/sbin/sendmail", "/usr/lib/sendmail")):
+            warns.append("This server has no mail program, so e-mails can't be sent until you install one (for example: sudo apt install msmtp-mta). "
+                         "Alerts are still recorded on this page and in the system log.")
+        return steps, warns
+    return [F("remove the alert settings from /etc/mdadm/mdadm.conf and restore any lines that were commented out",
+              lambda: mdconf_alerts(None)), S("systemctl", "restart", "mdmonitor", soft=True)], []
+
+
+@op("raid-alert-test")
+def op_raid_alert_test(inv, a):
+    need(have("mdadm"), "mdadm is not installed (sudo apt install mdadm)")
+    need(read_alerts()["enabled"], "turn the alerts on first")
+    return [S("mdadm", "--monitor", "--scan", "--oneshot", "--test", soft=True)], \
+        ["Sends a test event for each array to the alert program and, if set, to the e-mail address."]
+
+
+# ---------------- LUKS: automatic unlock, key slots, header backup ----------------
+
+def crypttab_lines():
+    return CRYPTTAB.read_text().splitlines() if CRYPTTAB.exists() else []
+
+
+def crypttab_entries():
+    out, lines = {}, crypttab_lines()
+    for i, l in enumerate(lines[:-1]):
+        if l.strip() == CRYPT_TAG:
+            f = lines[i + 1].split()
+            if len(f) >= 4:
+                out[f[0]] = {"spec": f[1], "key": f[2], "options": f[3]}
+    return out
+
+
+def autounlock_names():
+    return set(crypttab_entries())
+
+
+def crypttab_drop(lines, name):
+    out, i = [], 0
+    while i < len(lines):
+        if lines[i].strip() == CRYPT_TAG and i + 1 < len(lines) and lines[i + 1].split()[:1] == [name]:
+            i += 2
+            continue
+        out.append(lines[i])
+        i += 1
+    return out
+
+
+def crypttab_save(lines):
+    if CRYPTTAB.exists() and not CRYPTTAB_BAK.exists():
+        shutil.copy2(CRYPTTAB, CRYPTTAB_BAK)
+    atomic_write(CRYPTTAB, "\n".join(lines) + "\n", 0o644)
+    run(["systemctl", "daemon-reload"])
+
+
+def crypttab_set(name, entry):
+    lines = crypttab_lines()
+    for l in crypttab_drop(lines, name):
+        f = l.split()
+        if f and not l.lstrip().startswith("#") and f[0] == name:
+            raise Bad(f"/etc/crypttab already has an unrelated entry named {name}")
+    crypttab_save(crypttab_drop(lines, name) + [CRYPT_TAG, entry])
+
+
+def crypttab_remove(name):
+    crypttab_save(crypttab_drop(crypttab_lines(), name))
+
+
+@op("luks-autounlock")
+def op_luks_autounlock(inv, a):
+    need(have("cryptsetup"), "cryptsetup is not installed (sudo apt install cryptsetup)")
+    n = luks_container(inv, a.get("device"))
+    need(not n["protected"], "this volume holds the running system. The boot process unlocks it, not this page")
+    need(n["uuid"], "this container has no UUID")
+    need(not any(e["spec"] == "UUID=" + n["uuid"] for e in crypttab_entries().values()),
+         "automatic unlock is already set up for this volume")
+    mode = a.get("mode")
+    need(mode in ("keyfile", "tpm2"), "choose key file or TPM")
+    mapped = mapped_of(inv, n)
+    name = mapped["name"] if mapped else a.get("name")
+    need(isinstance(name, str) and MAPPER_RE.fullmatch(name), "the name may use lowercase letters, digits, - and _")
+    if not mapped:
+        need(not os.path.lexists("/dev/mapper/" + name), "that name is already in use")
+    pw = secret(a, "passphrase", "a current passphrase", 1, 512)
+    slots = luks_slots(n["path"])
+    need(slots is None or slots < 8, "this volume already has the maximum number of unlock methods")
+    path, spec = n["path"], "UUID=" + n["uuid"]
+    if mode == "keyfile":
+        keyfile = KEYDIR / f"{name}.key"
+        need(not keyfile.exists(), f"{keyfile} already exists")
+
+        def enroll():
+            KEYDIR.mkdir(parents=True, exist_ok=True)
+            os.chmod(KEYDIR, 0o700)
+            fd = os.open(keyfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+            try:
+                os.write(fd, secrets.token_bytes(64))
+            finally:
+                os.close(fd)
+            r = run(["cryptsetup", "luksAddKey", "--key-file=-", path, str(keyfile)], timeout=300, data=pw)
+            if r.returncode != 0:
+                keyfile.unlink(missing_ok=True)
+                raise Bad((r.stderr or r.stdout).strip()[:300] or "could not add the key")
+
+        entry = f"{name} {spec} {keyfile} luks,nofail,x-systemd.device-timeout=10s"
+        steps = [F(f"create a random key file {keyfile} (readable by root only) and add it to the volume", enroll)]
+        warns = ["The key file is stored on this server's system disk. Anyone who gets this server, or a copy of its disk, can unlock the volume. "
+                 "It only protects against someone taking the data disk alone."]
+    else:
+        need(have("systemd-cryptenroll"), "systemd-cryptenroll is not installed")
+        need(Path("/dev/tpmrm0").exists(), "this machine has no TPM 2.0 device")
+        steps = [F("enrol the TPM so it can unlock the volume",
+                   lambda: run_keyfd(lambda p: ["systemd-cryptenroll", "--tpm2-device=auto", "--tpm2-pcrs=7",
+                                                f"--unlock-key-file={p}", path], pw))]
+        entry = f"{name} {spec} none luks,tpm2-device=auto,nofail,x-systemd.device-timeout=30s"
+        warns = ["Unlocking is tied to this machine's TPM and its secure-boot state. If the firmware settings change, "
+                 "or the disk is moved to another machine, the passphrase is needed again."]
+    steps.append(F(f"add the volume to /etc/crypttab: {entry}", lambda: crypttab_set(name, entry)))
+    if not mapped:
+        steps.append(S("systemctl", "start", f"systemd-cryptsetup@{name}.service", soft=True))
+    return steps, warns
+
+
+@op("luks-autounlock-off")
+def op_luks_autounlock_off(inv, a):
+    n = luks_container(inv, a.get("device"))
+    ent = next(((nm, e) for nm, e in crypttab_entries().items() if n["uuid"] and e["spec"] == "UUID=" + n["uuid"]), None)
+    need(ent is not None, "automatic unlock isn't set up for this volume")
+    name, e = ent
+    pw = secret(a, "passphrase", "a passphrase that will remain valid", 1, 512)
+    slots = luks_slots(n["path"])
+    need(slots is not None and slots >= 2, "this is the only unlock method. Add a passphrase first")
+    path = n["path"]
+    steps = [F("check that your passphrase really unlocks the volume",
+               lambda: need(test_passphrase(path, pw), "that passphrase does not unlock this volume. Nothing was changed"))]
+    if "tpm2-device" in e["options"]:
+        steps.append(F("remove the TPM unlock method",
+                       lambda: run_keyfd(lambda p: ["systemd-cryptenroll", "--wipe-slot=tpm2",
+                                                    f"--unlock-key-file={p}", path], pw)))
+    else:
+        keyfile = Path(e["key"])
+        need(str(keyfile).startswith(str(KEYDIR) + "/"), "unexpected key file location")
+        steps += [S("cryptsetup", "luksRemoveKey", "--batch-mode", path, str(keyfile)),
+                  F("delete the key file", lambda: keyfile.unlink(missing_ok=True))]
+    steps.append(F("remove the volume from /etc/crypttab", lambda: crypttab_remove(name)))
+    return steps, ["The volume stays locked after the next reboot until you unlock it here."]
+
+
+def cmd_luks_header():
+    need(have("cryptsetup"), "cryptsetup is not installed (sudo apt install cryptsetup)")
+    try:
+        req = json.loads(sys.stdin.read(4096))
+    except ValueError:
+        raise Bad("invalid request")
+    need(isinstance(req, dict), "invalid request")
+    n = luks_container(build_inventory(), req.get("device"))
+    tmp = STATE_DIR / f"header-{secrets.token_hex(4)}.img"
+    try:
+        r = run(["cryptsetup", "luksHeaderBackup", n["path"], "--header-backup-file", str(tmp)])
+        need(r.returncode == 0, "could not read the header: " + (r.stderr or r.stdout).strip()[:200])
+        data = tmp.read_bytes()
+    finally:
+        tmp.unlink(missing_ok=True)
+    syslog.openlog("adminpanel-disk")
+    syslog.syslog(syslog.LOG_NOTICE, f"header backup of {n['path']} downloaded")
+    print(json.dumps({"name": f"luks-header-{(n['uuid'] or 'volume')[:8]}.img.gz",
+                      "gz_b64": base64.b64encode(gzip.compress(data, 6)).decode(), "raw_bytes": len(data)}))
+
+
+# ---- storage part 4 ----
+import datetime, socket
+
+EXPORT_TYPES = ("disk", "part", "lvm", "crypt", "mpath") + RAID_TYPES
+MPATH_CONF = Path("/etc/multipath.conf")
+MPATH_TAG = "# Managed by the admin panel"
+TGT_REGISTRY = STATE_DIR / "iscsi-target.json"
+IMG_DIR = STATE_DIR / "iscsi-images"
+LABEL_TGT_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,30}")
+BSNAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,30}")
+SECRET_TGT_RE = re.compile(r"[\x21-\x7e]{12,16}")
+IQN_CHECK = re.compile(r"iqn\.[0-9]{4}-[0-9]{2}\.[A-Za-z0-9.-]{1,100}(:[A-Za-z0-9._:-]{1,150})?")
+AUTH_KEYS = ("node.session.auth.authmethod", "node.session.auth.username", "node.session.auth.password",
+             "node.session.auth.username_in", "node.session.auth.password_in")
+
+
+def guard(fn):
+    def wrapped():
+        try:
+            return fn()
+        except Bad:
+            raise
+        except Exception as e:
+            raise Bad(f"{type(e).__name__}: {e}"[:400])
+    return wrapped
+
+
+def FR(desc, fn):
+    return F(desc, guard(fn))
+
+
+# ---------------- initiator helpers ----------------
+
+def iface_of(a):
+    v = a.get("iface") or "default"
+    need(v in ("default", "iser"), "choose the TCP or iSER transport")
+    return v
+
+
+def iser_state():
+    d = Path("/sys/class/infiniband")
+    devs = sorted(p.name for p in d.iterdir()) if d.is_dir() else []
+    if not devs:
+        return {"ok": False, "devices": [],
+                "reason": "no RDMA devices were found (iSER needs RDMA-capable network hardware, or Soft-RoCE for testing)"}
+    if run(["modinfo", "ib_iser"]).returncode != 0:
+        return {"ok": False, "devices": devs, "reason": "the ib_iser kernel module is not available"}
+    return {"ok": True, "devices": devs, "reason": ""}
+
+
+def multipath_redundant(inv, d):
+    kids = [inv["nodes"][c] for c in d["children"] if c in inv["nodes"]]
+    maps = [k for k in kids if k["type"] == "mpath"]
+    return bool(maps) and len(maps) == len(kids) and all(len(m["parents"]) >= 2 for m in maps)
+
+
+def write_auth(f, values):
+    lines, seen = [], set()
+    for l in f.read_text().splitlines():
+        k = l.split("=", 1)[0].strip()
+        if k in values:
+            lines.append(f"{k} = {values[k]}")
+            seen.add(k)
+        else:
+            lines.append(l)
+    for k, v in values.items():
+        if k not in seen:
+            lines.append(f"{k} = {v}")
+    atomic_write(f, "\n".join(lines) + "\n", 0o600)
+
+
+def read_auth(iqn, portal, iface):
+    host, port = parse_portal(portal)
+    f = node_file(iqn, host, port, iface)
+    need(f is not None, "could not find the saved login of the existing path")
+    vals = {}
+    for l in f.read_text().splitlines():
+        k, sep, v = l.partition("=")
+        if sep and k.strip() in AUTH_KEYS:
+            vals[k.strip()] = v.strip()
+    need(vals, "the existing path has no saved login to copy")
+    return vals
+
+
+def copy_login(iqn, host, port, iface, copy_portal, copy_iface):
+    vals = read_auth(iqn, copy_portal, copy_iface)
+    f = node_file(iqn, host, port, iface)
+    need(f is not None, "could not find the new path's saved record")
+    write_auth(f, vals)
+
+
+def st_file(host, port):
+    h = host.strip("[]")
+    for root in ("/etc/iscsi/send_targets", "/var/lib/iscsi/send_targets"):
+        d = Path(root) / f"{h},{port}"
+        if (d / "st_config").is_file():
+            return d / "st_config"
+    return None
+
+
+@op("iscsi-reconnect")
+def op_iscsi_reconnect(inv, a):
+    iqn, host, port, portal = iscsi_target(a)
+    iface = iface_of(a)
+    need(node_exists(iqn, portal, iface), "that path isn't saved")
+    need(not any(s["iqn"] == iqn and s["portal"] == portal and s["iface"] == iface for s in iscsi_sessions()),
+         "already connected")
+    return [S("systemctl", "start", "iscsid", soft=True),
+            S("iscsiadm", "-m", "node", "-T", iqn, "-p", portal, "-I", iface, "--login")] + settle(), []
+
+
+@op("iscsi-rescan")
+def op_iscsi_rescan(inv, a):
+    need(have("iscsiadm"), "open-iscsi is not installed (sudo apt install open-iscsi)")
+    return [S("iscsiadm", "-m", "session", "-R")] + settle(), ["Looks for new or resized disks on every connected target."]
+
+
+# ---------------- multipath ----------------
+
+def mpath_installed():
+    return have("multipath") and have("multipathd")
+
+
+def mpath_live_maps():
+    r = run(["multipathd", "show", "maps", "json"])
+    out = {}
+    if r.returncode != 0:
+        return out
+    try:
+        data = json.loads(r.stdout)
+    except ValueError:
+        return out
+    for m in data.get("maps", []):
+        paths = []
+        for g in m.get("path_groups", []):
+            for p in g.get("paths", []):
+                paths.append({"dev": p.get("dev") or "", "state": p.get("dm_st") or "", "check": p.get("chk_st") or ""})
+        out[m.get("name", "")] = {"state": m.get("dm_st", ""), "features": m.get("features", ""), "paths": paths}
+    return out
+
+
+def mpath_inventory(inv, out):
+    info = {"available": False, "running": False, "enabled": False, "managed_conf": False, "maps": []}
+    try:
+        info["available"] = mpath_installed()
+        if info["available"]:
+            info["running"] = run(["systemctl", "is-active", "multipathd"]).stdout.strip() == "active"
+            info["enabled"] = run(["systemctl", "is-enabled", "multipathd"]).stdout.strip() == "enabled"
+            try:
+                info["managed_conf"] = MPATH_TAG in MPATH_CONF.read_text()
+            except OSError:
+                pass
+            live = mpath_live_maps() if info["running"] else {}
+            for path in inv["order"]:
+                n = inv["nodes"][path]
+                if n["type"] != "mpath":
+                    continue
+                lv = live.get(n["name"], {})
+                info["maps"].append({
+                    "name": n["name"], "path": path, "size": n["size"], "fstype": n["fstype"], "mounts": n["subtree_mounts"],
+                    "state": lv.get("state", ""), "features": lv.get("features", ""),
+                    "paths": lv.get("paths") or [{"dev": os.path.basename(p), "state": "", "check": ""} for p in n["parents"]],
+                })
+    except Exception as e:
+        info["error"] = str(e)[:200]
+    out["multipath"] = info
+
+
+@op("mpath-enable")
+def op_mpath_enable(inv, a):
+    need(mpath_installed(), "multipath-tools is not installed (sudo apt install multipath-tools)")
+    steps = [S("modprobe", "dm_multipath", soft=True)]
+    if not MPATH_CONF.exists():
+        text = (MPATH_TAG + ". Delete this line to take over editing by hand.\n"
+                "defaults {\n    user_friendly_names yes\n    find_multipaths yes\n}\n")
+        steps.append(F("write a minimal /etc/multipath.conf (only devices with more than one path are combined)",
+                       lambda: atomic_write(MPATH_CONF, text, 0o644)))
+    steps += [S("systemctl", "enable", "--now", "multipathd"), S("multipath", "-r", soft=True)] + settle()
+    return steps, ["Disks reached over more than one path are combined into one multipath device. The separate path disks then show as in use."]
+
+
+@op("mpath-disable")
+def op_mpath_disable(inv, a):
+    need(mpath_installed(), "multipath-tools is not installed")
+    busy = [n["path"] for n in inv["nodes"].values() if n["type"] == "mpath" and n["busy"]]
+    need(not busy, "multipath devices are in use: " + ", ".join(busy) + ". Unmount or release them first")
+    return [S("systemctl", "disable", "--now", "multipathd"), S("multipath", "-F", soft=True)] + settle(), \
+        ["Each path then appears as a separate disk again."]
+
+
+@op("mpath-reload")
+def op_mpath_reload(inv, a):
+    need(mpath_installed(), "multipath-tools is not installed")
+    return [S("multipathd", "reconfigure", soft=True), S("multipath", "-r", soft=True)] + settle(), []
+
+
+# ---------------- iSCSI target (this server exports storage) ----------------
+
+def rts():
+    try:
+        import rtslib_fb
+    except ImportError:
+        raise Bad("the iSCSI target software is not installed (sudo apt install targetcli-fb)")
+    return rtslib_fb
+
+
+def tgt_registry():
+    r = read_json(TGT_REGISTRY, {})
+    if not isinstance(r, dict) or not isinstance(r.get("backstores"), dict):
+        r = {"backstores": {}}
+    return r
+
+
+def tgt_registry_save(reg):
+    atomic_write(TGT_REGISTRY, json.dumps(reg, indent=1), 0o600)
+
+
+def tgt_save(R):
+    R.RTSRoot().save_to_file()
+
+
+def tgt_secret(a, key, label):
+    v = secret(a, key, label, 12, 16)
+    if v != "placeholder":
+        need(SECRET_TGT_RE.fullmatch(v) is not None, f"the {label} must be 12 to 16 visible characters without spaces")
+    return v
+
+
+def local_ipv4():
+    out = set()
+    try:
+        for link in json.loads(run(["ip", "-j", "-4", "addr", "show"]).stdout):
+            for x in link.get("addr_info", []):
+                if x.get("family") == "inet":
+                    out.add(x["local"])
+    except (ValueError, KeyError):
+        pass
+    return out
+
+
+def parse_local_portals(items):
+    need(isinstance(items, list) and 1 <= len(items) <= 8, "choose where the target listens")
+    local, out = local_ipv4(), []
+    for s in items:
+        need(isinstance(s, str), "invalid address")
+        ip, _, port = s.partition(":")
+        need(port == "" or port.isdigit(), "write an address as 192.168.1.10 or 192.168.1.10:3260")
+        port = int(port) if port else 3260
+        need(1 <= port <= 65535, "invalid port")
+        try:
+            addr = ipaddress.IPv4Address(ip)
+        except ValueError:
+            raise Bad("only IPv4 addresses are supported for the target")
+        need(ip == "0.0.0.0" or str(addr) in local, f"{ip} is not an address of this server")
+        out.append((str(addr), port))
+    return out
+
+
+def iqn_default(label):
+    host = re.sub(r"[^a-z0-9-]", "-", socket.gethostname().lower().split(".")[0]).strip("-") or "server"
+    return f"iqn.{datetime.date.today():%Y-%m}.local.{host}:{label}"
+
+
+def tgt_get(root, iqn):
+    need(isinstance(iqn, str) and IQN_CHECK.fullmatch(iqn) is not None, "invalid target name")
+    for t in root.targets:
+        if t.fabric_module.name == "iscsi" and t.wwn == iqn:
+            return t
+    raise Bad("no such target")
+
+
+def tgt_tpg(t):
+    tpgs = list(t.tpgs)
+    need(tpgs, "the target has no portal group")
+    return tpgs[0]
+
+
+def acl_connected(iqn, tag, initiator):
+    try:
+        text = Path(f"/sys/kernel/config/target/iscsi/{iqn}/tpgt_{tag}/acls/{initiator}/info").read_text()
+    except OSError:
+        return False
+    return "No active iSCSI Session" not in text and "InitiatorName" in text
+
+
+def target_inventory(inv, out):
+    info = {"available": False, "reason": "", "persist": "", "addresses": sorted(local_ipv4()),
+            "backstores": [], "targets": [], "discovery": {"supported": False}}
+    try:
+        R = rts()
+        root = R.RTSRoot()
+        info["available"] = True
+        info["persist"] = run(["systemctl", "is-enabled", "rtslib-fb-targetctl"]).stdout.strip()
+        reg, used, targets = tgt_registry()["backstores"], {}, []
+        for t in root.targets:
+            if t.fabric_module.name != "iscsi":
+                continue
+            for tpg in t.tpgs:
+                luns, portals, acls = [], [], []
+                for l in tpg.luns:
+                    luns.append({"lun": l.lun, "backstore": l.storage_object.name})
+                    used.setdefault(l.storage_object.name, []).append(f"{t.wwn} LUN {l.lun}")
+                for p in tpg.network_portals:
+                    try:
+                        iser = bool(p.iser)
+                    except Exception:
+                        iser = False
+                    portals.append({"ip": p.ip_address, "port": p.port, "iser": iser})
+                for acl in tpg.node_acls:
+                    ml = list(acl.mapped_luns)
+                    acls.append({"initiator": acl.node_wwn, "chap": bool(acl.chap_userid), "chap_user": acl.chap_userid or "",
+                                 "mutual": bool(acl.chap_mutual_userid),
+                                 "readonly": bool(ml) and all(bool(m.write_protect) for m in ml),
+                                 "luns": sorted(m.mapped_lun for m in ml),
+                                 "connected": acl_connected(t.wwn, tpg.tag, acl.node_wwn)})
+                try:
+                    auth = int(tpg.get_attribute("authentication")) == 1
+                except Exception:
+                    auth = False
+                targets.append({"iqn": t.wwn, "tag": tpg.tag, "enabled": bool(tpg.enable), "auth": auth,
+                                "luns": sorted(luns, key=lambda x: x["lun"]), "portals": portals, "acls": acls})
+                break
+        info["targets"] = targets
+        for so in root.storage_objects:
+            r = reg.get(so.name, {})
+            kind = r.get("kind") or ("file" if so.plugin == "fileio" else "block" if so.plugin == "block" else so.plugin)
+            info["backstores"].append({"name": so.name, "kind": kind,
+                                       "path": r.get("path") or (getattr(so, "udev_path", "") or ""),
+                                       "size": to_int(getattr(so, "size", 0)), "used_by": used.get(so.name, [])})
+        try:
+            fm = R.FabricModule("iscsi")
+            info["discovery"] = {"supported": True, "enabled": bool(fm.discovery_enable_auth),
+                                 "mutual": bool(fm.discovery_authenticate_target), "user": fm.discovery_userid or ""}
+        except Exception:
+            pass
+    except Bad as e:
+        info["reason"] = str(e)
+    except Exception as e:
+        info["available"] = False
+        info["reason"] = f"{type(e).__name__}: {e}"[:200]
+    out["target"] = info
+
+
+@op("tgt-backstore-create")
+def op_tgt_backstore_create(inv, a):
+    R = rts()
+    kind = a.get("kind")
+    need(kind in ("block", "file"), "choose a disk or volume, or an image file")
+    name = a.get("name")
+    need(isinstance(name, str) and BSNAME_RE.fullmatch(name), "the name may use letters, digits, . _ and - (31 characters at most)")
+    root = R.RTSRoot()
+    need(not any(so.name == name for so in root.storage_objects), "a volume with that name already exists")
+    warns, steps = [], []
+    if kind == "block":
+        n = get_dev(inv, a.get("device"), "export")
+        need(not is_remote(inv, n), "a disk that comes from another iSCSI target can't be exported again")
+        real = os.path.realpath(n["path"])
+        for so in root.storage_objects:
+            up = getattr(so, "udev_path", "") or ""
+            need(not up or os.path.realpath(up) != real, f"{n['path']} is already exported as {so.name}")
+
+        def make_block():
+            R.BlockStorageObject(name, dev=real)
+            reg = tgt_registry()
+            reg["backstores"][name] = {"kind": "block", "path": n["path"]}
+            tgt_registry_save(reg)
+        steps.append(FR(f"share {n['path']} as the volume {name}", make_block))
+        warns.append(f"{n['path']} is shared as a whole. Initiators you allow can read and write all of it. Don't mount it on this server while it is shared.")
+    else:
+        size = a.get("size_mib")
+        need(isinstance(size, int) and not isinstance(size, bool) and 16 <= size <= 16 * 1024 * 1024,
+             "the size must be between 16 MiB and 16 TiB")
+        path = IMG_DIR / f"{name}.img"
+        need(not path.exists(), f"{path} already exists")
+        if size * 1048576 > shutil.disk_usage(str(STATE_DIR)).free:
+            warns.append("The image is larger than the free space on this disk. It is sparse, so it starts small, but writing more than the free space will fail.")
+
+        def make_file():
+            IMG_DIR.mkdir(parents=True, exist_ok=True)
+            os.chmod(IMG_DIR, 0o700)
+            R.FileIOStorageObject(name, dev=str(path), size=size * 1048576)
+            os.chmod(path, 0o600)
+            reg = tgt_registry()
+            reg["backstores"][name] = {"kind": "file", "path": str(path)}
+            tgt_registry_save(reg)
+        steps.append(FR(f"create the {size} MiB sparse image {path} and the volume {name}", make_file))
+    steps.append(FR("save the target configuration", lambda: tgt_save(R)))
+    return steps, warns
+
+
+@op("tgt-backstore-remove", destructive=True)
+def op_tgt_backstore_remove(inv, a):
+    R = rts()
+    root = R.RTSRoot()
+    name = a.get("name")
+    so = next((s for s in root.storage_objects if s.name == name), None)
+    need(so is not None, "no such volume")
+    need(not any(l.storage_object.name == name for t in root.targets for tp in t.tpgs for l in tp.luns),
+         "it is still used by a LUN. Remove the LUN first")
+    reg = tgt_registry()["backstores"].get(name, {})
+
+    def drop():
+        so.delete()
+        r = tgt_registry()
+        r["backstores"].pop(name, None)
+        tgt_registry_save(r)
+
+    steps = [FR(f"remove the volume {name}", drop)]
+    path = reg.get("path", "")
+    if a.get("delete_file") and reg.get("kind") == "file" and os.path.dirname(os.path.realpath(path)) == os.path.realpath(str(IMG_DIR)):
+        steps.append(FR(f"delete the image file {path}", lambda: Path(path).unlink(missing_ok=True)))
+    steps.append(FR("save the target configuration", lambda: tgt_save(R)))
+    return steps, ["Disk or volume exports keep their data. Image files lose it if you also delete the file."]
+
+
+@op("tgt-create")
+def op_tgt_create(inv, a):
+    R = rts()
+    label = a.get("label")
+    need(isinstance(label, str) and LABEL_TGT_RE.fullmatch(label), "the name may use lowercase letters, digits, . _ and -")
+    iqn = a.get("iqn") or iqn_default(label)
+    need(isinstance(iqn, str) and IQN_CHECK.fullmatch(iqn), "invalid target name")
+    root = R.RTSRoot()
+    need(not any(t.wwn == iqn for t in root.targets), "a target with that name already exists")
+    portals = parse_local_portals(a.get("portals"))
+    vols = a.get("backstores") or []
+    need(isinstance(vols, list) and len(vols) <= 32, "invalid list of volumes")
+    names = {so.name for so in root.storage_objects}
+    for b in vols:
+        need(isinstance(b, str) and b in names, f"unknown volume {b!r}")
+    auth, enable = bool(a.get("auth", True)), bool(a.get("enable", True))
+
+    def make():
+        fm = R.FabricModule("iscsi")
+        t = R.Target(fm, iqn)
+        tpg = R.TPG(t, 1)
+        tpg.set_attribute("authentication", "1" if auth else "0")
+        tpg.set_attribute("generate_node_acls", "0")
+        for ip, port in portals:
+            R.NetworkPortal(tpg, ip, port)
+        sos = {so.name: so for so in R.RTSRoot().storage_objects}
+        for b in vols:
+            R.LUN(tpg, storage_object=sos[b])
+        tpg.enable = enable
+
+    warns = ["Nobody can connect until you add an initiator. Open port 3260/tcp on the Firewall page for the networks that should connect."]
+    if not auth:
+        warns.append("Login (CHAP) is not required, so any allowed initiator can connect without a password.")
+    steps = [FR(f"create the target {iqn} listening on " + ", ".join(f"{i}:{p}" for i, p in portals), make),
+             S("systemctl", "enable", "rtslib-fb-targetctl", soft=True),
+             FR("save the target configuration so it returns after a reboot", lambda: tgt_save(R))]
+    return steps, warns
+
+
+@op("tgt-remove", destructive=True)
+def op_tgt_remove(inv, a):
+    R = rts()
+    root = R.RTSRoot()
+    t = tgt_get(root, a.get("iqn"))
+    tpg = tgt_tpg(t)
+    iqn = t.wwn
+    connected = [x.node_wwn for x in tpg.node_acls if acl_connected(iqn, tpg.tag, x.node_wwn)]
+    warns = ["Initiators connected to this target are disconnected. The data behind the shared volumes is not touched."]
+    if connected:
+        warns.append("Connected right now: " + ", ".join(connected))
+    return [FR(f"remove the target {iqn} with its volumes, portals and initiator entries",
+               lambda: tgt_get(R.RTSRoot(), iqn).delete()),
+            FR("save the target configuration", lambda: tgt_save(R))], warns
+
+
+@op("tgt-lun-add")
+def op_tgt_lun_add(inv, a):
+    R = rts()
+    root = R.RTSRoot()
+    t = tgt_get(root, a.get("iqn"))
+    tpg = tgt_tpg(t)
+    iqn, bs = t.wwn, a.get("backstore")
+    need(any(so.name == bs for so in root.storage_objects), "choose a volume")
+    need(not any(l.storage_object.name == bs for l in tpg.luns), "that volume is already shared by this target")
+
+    def add():
+        rt = R.RTSRoot()
+        tp = tgt_tpg(tgt_get(rt, iqn))
+        so = next(s for s in rt.storage_objects if s.name == bs)
+        lun = R.LUN(tp, storage_object=so)
+        for acl in tp.node_acls:
+            ml = list(acl.mapped_luns)
+            ro = bool(ml) and all(bool(m.write_protect) for m in ml)
+            R.MappedLUN(acl, lun.lun, lun, write_protect=ro)
+    return [FR(f"share {bs} through {iqn} and give every allowed initiator access", add),
+            FR("save the target configuration", lambda: tgt_save(R))], []
+
+
+@op("tgt-lun-remove", destructive=True)
+def op_tgt_lun_remove(inv, a):
+    R = rts()
+    t = tgt_get(R.RTSRoot(), a.get("iqn"))
+    iqn, n = t.wwn, a.get("lun")
+    need(isinstance(n, int) and not isinstance(n, bool), "choose a LUN")
+    need(any(l.lun == n for l in tgt_tpg(t).luns), "no such LUN")
+
+    def drop():
+        tp = tgt_tpg(tgt_get(R.RTSRoot(), iqn))
+        next(l for l in tp.luns if l.lun == n).delete()
+    return [FR(f"stop sharing LUN {n} of {iqn}", drop), FR("save the target configuration", lambda: tgt_save(R))], \
+        ["Initiators using this LUN lose access to it. The data behind it is not touched."]
+
+
+@op("tgt-portal-add")
+def op_tgt_portal_add(inv, a):
+    R = rts()
+    t = tgt_get(R.RTSRoot(), a.get("iqn"))
+    iqn = t.wwn
+    (ip, port), = parse_local_portals([f"{a.get('ip')}:{a.get('port') or 3260}"])
+    iser = bool(a.get("iser"))
+    if iser:
+        st = iser_state()
+        need(st["ok"], "iSER isn't available: " + st["reason"])
+
+    def add():
+        tp = tgt_tpg(tgt_get(R.RTSRoot(), iqn))
+        np_ = R.NetworkPortal(tp, ip, port)
+        if iser:
+            np_.iser = True
+    steps = ([S("modprobe", "ib_isert", soft=True)] if iser else []) + \
+        [FR(f"listen on {ip}:{port}" + (" with iSER" if iser else ""), add), FR("save the target configuration", lambda: tgt_save(R))]
+    return steps, ["Open the port on the Firewall page for the networks that should connect."]
+
+
+@op("tgt-portal-remove")
+def op_tgt_portal_remove(inv, a):
+    R = rts()
+    t = tgt_get(R.RTSRoot(), a.get("iqn"))
+    iqn, ip, port = t.wwn, a.get("ip"), a.get("port")
+    need(any(p.ip_address == ip and p.port == port for p in tgt_tpg(t).network_portals), "no such portal")
+
+    def drop():
+        tp = tgt_tpg(tgt_get(R.RTSRoot(), iqn))
+        next(p for p in tp.network_portals if p.ip_address == ip and p.port == port).delete()
+    return [FR(f"stop listening on {ip}:{port}", drop), FR("save the target configuration", lambda: tgt_save(R))], []
+
+
+@op("tgt-acl-set")
+def op_tgt_acl_set(inv, a):
+    R = rts()
+    t = tgt_get(R.RTSRoot(), a.get("iqn"))
+    tpg = tgt_tpg(t)
+    iqn, init = t.wwn, a.get("initiator")
+    need(isinstance(init, str) and IQN_RE.fullmatch(init), "enter the initiator's name (for example iqn.1993-08.org.debian:01:abc123)")
+    existing = next((x for x in tpg.node_acls if x.node_wwn == init), None)
+    user, uin = a.get("chap_user") or "", a.get("chap_user_in") or ""
+    has_pw, has_pin = bool(a.get("chap_pass")), bool(a.get("chap_pass_in"))
+    clear, ro = bool(a.get("clear_chap")), bool(a.get("readonly"))
+    pw = pin = ""
+    if user or has_pw:
+        need(isinstance(user, str) and CHAP_USER_RE.fullmatch(user), "the CHAP user name may use letters, digits and . _ @ : -")
+        pw = tgt_secret(a, "chap_pass", "CHAP password")
+    if uin or has_pin:
+        need(isinstance(uin, str) and CHAP_USER_RE.fullmatch(uin), "the mutual user name may use letters, digits and . _ @ : -")
+        pin = tgt_secret(a, "chap_pass_in", "mutual CHAP password")
+        need(user or (existing is not None and existing.chap_userid and not clear), "mutual CHAP needs a CHAP user name and password too")
+        need(pin != pw or pw == "", "the mutual password must differ from the CHAP password")
+    try:
+        required = int(tpg.get_attribute("authentication")) == 1
+    except Exception:
+        required = False
+    will = bool(user) or (existing is not None and bool(existing.chap_userid) and not clear)
+    need(not required or will, "login is required for this target, so give this initiator a CHAP user name and password (or turn the requirement off first)")
+
+    def apply():
+        rt = R.RTSRoot()
+        tp = tgt_tpg(tgt_get(rt, iqn))
+        acl = next((x for x in tp.node_acls if x.node_wwn == init), None)
+        if acl is None:
+            acl = R.NodeACL(tp, init)
+            for l in tp.luns:
+                R.MappedLUN(acl, l.lun, l, write_protect=ro)
+        else:
+            for m in acl.mapped_luns:
+                m.write_protect = ro
+        if clear:
+            acl.chap_userid = ""
+            acl.chap_password = ""
+            acl.chap_mutual_userid = ""
+            acl.chap_mutual_password = ""
+        if user:
+            acl.chap_userid = user
+            acl.chap_password = pw
+        if uin:
+            acl.chap_mutual_userid = uin
+            acl.chap_mutual_password = pin
+    warns = [] if will else ["This initiator can connect without a password."]
+    return [FR(("update" if existing else "allow") + f" the initiator {init}", apply),
+            FR("save the target configuration", lambda: tgt_save(R))], warns
+
+
+@op("tgt-acl-remove", destructive=True)
+def op_tgt_acl_remove(inv, a):
+    R = rts()
+    t = tgt_get(R.RTSRoot(), a.get("iqn"))
+    iqn, init = t.wwn, a.get("initiator")
+    need(any(x.node_wwn == init for x in tgt_tpg(t).node_acls), "no such initiator")
+
+    def drop():
+        tp = tgt_tpg(tgt_get(R.RTSRoot(), iqn))
+        next(x for x in tp.node_acls if x.node_wwn == init).delete()
+    return [FR(f"stop allowing the initiator {init}", drop), FR("save the target configuration", lambda: tgt_save(R))], \
+        ["If it is connected right now, its session ends."]
+
+
+@op("tgt-enable")
+def op_tgt_enable(inv, a):
+    R = rts()
+    t = tgt_get(R.RTSRoot(), a.get("iqn"))
+    iqn, on = t.wwn, bool(a.get("enable"))
+
+    def go():
+        tgt_tpg(tgt_get(R.RTSRoot(), iqn)).enable = on
+    return [FR(("enable " if on else "disable ") + iqn, go), FR("save the target configuration", lambda: tgt_save(R))], \
+        ([] if on else ["Connected initiators are disconnected and can't reconnect while it is disabled."])
+
+
+@op("tgt-auth")
+def op_tgt_auth(inv, a):
+    R = rts()
+    t = tgt_get(R.RTSRoot(), a.get("iqn"))
+    tpg = tgt_tpg(t)
+    iqn, on = t.wwn, bool(a.get("required"))
+    if on:
+        lacking = [x.node_wwn for x in tpg.node_acls if not x.chap_userid]
+        need(not lacking, "these initiators have no CHAP login yet: " + ", ".join(lacking))
+
+    def go():
+        tgt_tpg(tgt_get(R.RTSRoot(), iqn)).set_attribute("authentication", "1" if on else "0")
+    return [FR(("require" if on else "stop requiring") + f" a login for {iqn}", go),
+            FR("save the target configuration", lambda: tgt_save(R))], \
+        ([] if on else ["Any allowed initiator can then connect without a password."])
+
+
+@op("tgt-discovery-auth")
+def op_tgt_discovery_auth(inv, a):
+    R = rts()
+    if not a.get("enable"):
+        def off():
+            R.FabricModule("iscsi").discovery_enable_auth = False
+        return [FR("turn the discovery login off", off), FR("save the target configuration", lambda: tgt_save(R))], \
+            ["Anyone who can reach the portal can list this server's targets again."]
+    user = a.get("user") or ""
+    need(isinstance(user, str) and CHAP_USER_RE.fullmatch(user), "the discovery user name may use letters, digits and . _ @ : -")
+    pw = tgt_secret(a, "pass", "discovery password")
+    uin = a.get("user_in") or ""
+    pin = ""
+    if uin or a.get("pass_in"):
+        need(isinstance(uin, str) and CHAP_USER_RE.fullmatch(uin), "the mutual user name may use letters, digits and . _ @ : -")
+        pin = tgt_secret(a, "pass_in", "mutual discovery password")
+        need(pin != pw, "the mutual password must differ from the discovery password")
+
+    def on():
+        fm = R.FabricModule("iscsi")
+        fm.discovery_userid = user
+        fm.discovery_password = pw
+        if uin:
+            fm.discovery_mutual_userid = uin
+            fm.discovery_mutual_password = pin
+        fm.discovery_authenticate_target = bool(uin)
+        fm.discovery_enable_auth = True
+    return [FR("turn the discovery login on", on), FR("save the target configuration", lambda: tgt_save(R))], []
+
+
+@op("tgt-persist")
+def op_tgt_persist(inv, a):
+    on = bool(a.get("enable"))
+    return [S("systemctl", "enable" if on else "disable", "rtslib-fb-targetctl")], \
+        (["The saved target configuration is restored at boot."] if on else ["Targets are not restored after a reboot until you turn this back on."])
+
+
+INVENTORY_EXTRAS.extend([mpath_inventory, target_inventory])
+
+
+# @@EXTENSION-POINT@@ (more operations are added above this line)
+
+
+def execute(steps):
+    log = []
+    for s in steps:
+        if "job" in s:
+            log.append(start_job(s["job"]))
+            continue
+        if "argv" in s:
+            r = run(s["argv"], timeout=900, data=s.get("input"))
+            out = ((r.stdout or "") + (r.stderr or "")).strip()
+            log.append("$ " + shlex.join(s["argv"]) + (("\n" + out[:1500]) if out else ""))
+            if r.returncode != 0 and not s.get("soft"):
+                raise Bad("A step failed, so the remaining steps were not run:\n\n" + "\n\n".join(log)[-3500:])
+        else:
+            try:
+                s["fn"]()
+            except Bad as e:
+                raise Bad(f"A step failed ({s['desc']}): {e}\n\n" + "\n\n".join(log)[-3000:])
+            log.append(s["desc"])
+    return log
+
+
+def cmd_op(mode):
+    raw = sys.stdin.read(MAX_INPUT + 1)
+    need(len(raw) <= MAX_INPUT, "request too large")
+    try:
+        req = json.loads(raw)
+    except ValueError:
+        raise Bad("invalid request")
+    need(isinstance(req, dict), "invalid request")
+    name, args = req.get("op"), req.get("args", {})
+    need(isinstance(name, str) and name in OPS, "unknown operation")
+    need(isinstance(args, dict), "invalid arguments")
+    fn, destructive = OPS[name]
+    MODE["m"] = mode
+    if mode == "plan":
+        steps, warns = fn(build_inventory(), args)
+        print(json.dumps({"op": name, "destructive": destructive, "steps": [describe(s) for s in steps],
+                          "warnings": warns + remote_warnings(args)}))
+        return
+    with Lock():
+        steps, warns = fn(build_inventory(), args)
+        syslog.openlog("adminpanel-disk")
+        syslog.syslog(syslog.LOG_NOTICE, "apply " + name + " " + json.dumps(redact(args))[:400])
+        try:
+            log = execute(steps)
+        except Bad as e:
+            syslog.syslog(syslog.LOG_WARNING, f"{name} failed")
+            raise
+        syslog.syslog(syslog.LOG_NOTICE, f"{name} finished")
+    print(json.dumps({"ok": True, "log": "\n\n".join(log)}))
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) in (2, 3) else ""
+    try:
+        if cmd == "inventory":
+            cmd_inventory()
+        elif cmd == "iscsi-discover":
+            cmd_iscsi_discover()
+        elif cmd == "jobs":
+            cmd_jobs()
+        elif cmd == "job-cancel":
+            cmd_job_cancel()
+        elif cmd == "run-job":
+            cmd_run_job()
+        elif cmd == "luks-header":
+            cmd_luks_header()
+        elif cmd in ("plan", "apply"):
+            cmd_op(cmd)
+        else:
+            print("usage: inventory | plan | apply", file=sys.stderr)
+            sys.exit(2)
+    except Bad as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
+
+
+main()

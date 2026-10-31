@@ -1,0 +1,958 @@
+#!/usr/bin/python3 -I
+import base64, fcntl, grp, ipaddress, json, os, re, secrets, shutil, subprocess, sys, time
+from pathlib import Path
+
+NETDIR = Path("/etc/systemd/network")
+STATE_DIR = Path("/var/lib/adminpanel")
+STATE_FILE = STATE_DIR / "network.json"
+PROXY_FILE = STATE_DIR / "proxy.json"
+SNAP_DIR = STATE_DIR / "net-snapshot"
+PENDING = STATE_DIR / "net-pending"
+LOCK_FILE = STATE_DIR / "net.lock"
+WG_DIR = STATE_DIR / "wg"
+APT_FILE = Path("/etc/apt/apt.conf.d/95adminpanel-proxy")
+ENV_FILE = Path("/etc/environment")
+PREFIX = "05-ap-"
+HELPER = "/usr/local/sbin/adminpanel-net"
+WG = "/usr/bin/wg"
+TIMER = "adminpanel-net-rollback"
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+NAME_RE = re.compile(r"[a-z][a-z0-9_.-]{0,14}")
+MAC_RE = re.compile(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}")
+ID_RE = re.compile(r"[0-9a-f]{8}")
+KEYFILE_RE = re.compile(r"(.+)\.([0-9a-f]{8})\.(key|psk)")
+HOST_RE = re.compile(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+                     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*")
+PROXY_RE = re.compile(r"(?P<scheme>https?|socks5h?)://(?P<host>[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+                      r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*|\[[0-9A-Fa-f:]+\])"
+                      r"(?::(?P<port>\d{1,5}))?/?")
+NOPROXY_RE = re.compile(r"[A-Za-z0-9._*:/\[\]-]{1,100}")
+BOND_MODES = ("active-backup", "802.3ad", "balance-rr", "balance-xor",
+              "broadcast", "balance-tlb", "balance-alb")
+KINDS = ("ethernet", "vlan", "bridge", "bond")
+MAX_INPUT = 256 * 1024
+KEEP_DAYS = 7
+HEADER = "# Managed by the admin panel. Changes made by hand will be overwritten.\n"
+ENV_BEGIN = "# BEGIN adminpanel proxy (managed by the admin panel)"
+ENV_END = "# END adminpanel proxy"
+
+
+class Bad(Exception):
+    pass
+
+
+def need(cond, msg):
+    if not cond:
+        raise Bad(msg)
+
+
+def run(*args):
+    return subprocess.run(list(args), capture_output=True, text=True, env=ENV,
+                          timeout=60, stdin=subprocess.DEVNULL)
+
+
+class Lock:
+    def __enter__(self):
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        self.f = open(LOCK_FILE, "w")
+        fcntl.flock(self.f, fcntl.LOCK_EX)
+
+    def __exit__(self, *exc):
+        self.f.close()
+
+
+# ---------- state ----------
+
+def load_state(path=STATE_FILE):
+    try:
+        s = json.loads(path.read_text())
+    except (OSError, ValueError):
+        s = {}
+    if not isinstance(s, dict):
+        s = {}
+    s.setdefault("version", 1)
+    if not isinstance(s.get("items"), dict):
+        s["items"] = {}
+    if not isinstance(s.get("wireguard"), dict):
+        s["wireguard"] = {}
+    return s
+
+
+def save_state(state):
+    tmp = STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=1))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, STATE_FILE)
+
+
+def phys_names():
+    return {p.name for p in Path("/sys/class/net").iterdir() if (p / "device").exists()}
+
+
+def virtual_names(state):
+    names = {n for n, it in state.get("items", {}).items() if it.get("kind") != "ethernet"}
+    names.update(state.get("wireguard", {}))
+    return names
+
+
+def all_names(state):
+    names = set(state.get("items", {})) | set(state.get("wireguard", {}))
+    for it in state.get("items", {}).values():
+        names.update(it.get("members", []))
+    return names
+
+
+def local_networks():
+    out = []
+    try:
+        data = json.loads(run("ip", "-j", "addr", "show").stdout)
+    except ValueError:
+        return out
+    for link in data:
+        for a in link.get("addr_info", []):
+            try:
+                net = ipaddress.ip_interface(f'{a["local"]}/{a["prefixlen"]}').network
+            except (KeyError, ValueError):
+                continue
+            if net.is_loopback or net.is_link_local:
+                continue
+            out.append((link.get("ifname", ""), net))
+    return out
+
+
+def route_dev(ip):
+    try:
+        return json.loads(run("ip", "-j", "route", "get", str(ip)).stdout)[0].get("dev", "")
+    except (ValueError, IndexError, KeyError, TypeError):
+        return ""
+
+
+# ---------- validation: ordinary interfaces ----------
+
+def as_list(v, maxn, what):
+    if v is None or v == "":
+        return []
+    need(isinstance(v, list) and len(v) <= maxn, f"{what}: expected a list of at most {maxn} entries")
+    need(all(isinstance(x, str) for x in v), f"{what}: entries must be text")
+    return [x.strip() for x in v if x.strip()]
+
+
+def ip_str(s, fam=None):
+    s = str(s).strip()
+    need("%" not in s, f"invalid address {s!r}")
+    try:
+        a = ipaddress.ip_address(s)
+    except ValueError:
+        raise Bad(f"invalid IP address {s!r}")
+    need(fam is None or a.version == fam, f"{s} is not an IPv{fam} address")
+    need(not (a.is_loopback or a.is_multicast or a.is_unspecified), f"{s} is not a usable address")
+    return str(a)
+
+
+def fmt_iface(s):
+    need("/" in s and "%" not in s, f"address {s!r}: include the prefix length, like 192.168.1.10/24")
+    try:
+        i = ipaddress.ip_interface(s)
+    except ValueError:
+        raise Bad(f"invalid address {s!r}")
+    need(not (i.ip.is_loopback or i.ip.is_multicast or i.ip.is_unspecified), f"{s} is not a usable address")
+    return str(i)
+
+
+def norm_route(s):
+    p = s.split()
+    need(len(p) in (3, 5) and p[1] == "via" and (len(p) == 3 or p[3] == "metric"),
+         f"route {s!r}: use 'DESTINATION via GATEWAY' or 'DESTINATION via GATEWAY metric N'")
+    try:
+        net = ipaddress.ip_network(p[0], strict=False)
+    except ValueError:
+        raise Bad(f"route {s!r}: invalid destination")
+    need(net.prefixlen > 0, "default routes are set with the gateway fields")
+    out = f"{net} via {ip_str(p[2], net.version)}"
+    if len(p) == 5:
+        need(p[4].isdigit() and 1 <= int(p[4]) <= 65535, f"route {s!r}: invalid metric")
+        out += f" metric {int(p[4])}"
+    return out
+
+
+def norm_ip(it):
+    addrs = [fmt_iface(a) for a in as_list(it.get("addresses"), 16, "addresses")]
+    out = {
+        "dhcp4": bool(it.get("dhcp4")),
+        "dhcp6": bool(it.get("dhcp6")),
+        "addresses": addrs,
+        "dns": [ip_str(d) for d in as_list(it.get("dns"), 6, "dns")],
+        "routes": [norm_route(r) for r in as_list(it.get("routes"), 32, "routes")],
+    }
+    for fam in (4, 6):
+        raw = it.get(f"gateway{fam}")
+        g = ip_str(raw, fam) if raw and str(raw).strip() else ""
+        out[f"gateway{fam}"] = g
+        if g and not (fam == 6 and ipaddress.ip_address(g).is_link_local):
+            nets = [ipaddress.ip_interface(a).network for a in addrs
+                    if ipaddress.ip_interface(a).version == fam]
+            need(nets, f"the IPv{fam} gateway needs a static IPv{fam} address on this interface")
+            need(any(ipaddress.ip_address(g) in n for n in nets),
+                 f"gateway {g} is not inside any of this interface's IPv{fam} subnets")
+    mtu = it.get("mtu")
+    if mtu in (None, ""):
+        out["mtu"] = None
+    else:
+        need(isinstance(mtu, int) and not isinstance(mtu, bool) and 576 <= mtu <= 9216,
+             "MTU must be a number from 576 to 9216")
+        out["mtu"] = mtu
+    return out
+
+
+# ---------- validation: WireGuard ----------
+
+def check_b64_key(s):
+    try:
+        raw = base64.b64decode(s, validate=True)
+    except Exception:
+        raw = b""
+    need(isinstance(s, str) and len(s) == 44 and len(raw) == 32, "that isn't a valid WireGuard key")
+    return s
+
+
+def norm_endpoint(s):
+    s = s.strip() if isinstance(s, str) else ""
+    if not s:
+        return "", None
+    ip = None
+    m = re.fullmatch(r"\[([0-9A-Fa-f:]+)\]:(\d{1,5})", s)
+    if m:
+        try:
+            ip = ipaddress.ip_address(m[1])
+        except ValueError:
+            raise Bad(f"invalid endpoint {s!r}")
+        need(ip.version == 6, f"invalid endpoint {s!r}")
+        host, port = f"[{ip}]", m[2]
+    else:
+        host, _, port = s.rpartition(":")
+        need(host != "" and port.isdigit(), "an endpoint looks like host:port, or [IPv6]:port")
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            ip = None
+        if ip is not None:
+            need(ip.version == 4, "write IPv6 endpoints in square brackets, like [2001:db8::1]:51820")
+            host = str(ip)
+        else:
+            need(HOST_RE.fullmatch(host) is not None, f"invalid endpoint host {host!r}")
+            host = host.lower()
+    need(1 <= int(port) <= 65535, "invalid endpoint port")
+    if ip is not None:
+        need(not (ip.is_loopback or ip.is_multicast or ip.is_unspecified), f"{ip} is not a usable endpoint")
+    return f"{host}:{int(port)}", ip
+
+
+def validate_wg(wg_in, items_out, old, admin_ip):
+    need(isinstance(wg_in, dict) and len(wg_in) <= 16, "invalid VPN list")
+    phys = phys_names()
+    existing = {p.name for p in Path("/sys/class/net").iterdir()}
+    old_virtual = virtual_names(old)
+    local = local_networks()
+    admin_dev = route_dev(admin_ip) if admin_ip is not None else ""
+    out, ports, claimed = {}, {}, []
+    for name, it in wg_in.items():
+        try:
+            need(isinstance(name, str) and NAME_RE.fullmatch(name) is not None and name != "lo",
+                 f"invalid interface name {name!r}")
+            need(name not in items_out, "that name is used by another interface in the list")
+            need(name not in phys, "that name belongs to a physical interface")
+            need(name not in existing or name in old_virtual,
+                 "an interface with that name already exists on this system")
+            need(isinstance(it, dict), "invalid settings")
+            kid = it.get("key_id")
+            need(isinstance(kid, str) and ID_RE.fullmatch(kid) is not None,
+                 "no private key yet: generate or import one first")
+            need((WG_DIR / f"{name}.{kid}.key").is_file(),
+                 "the stored private key is missing: generate or import it again")
+            addrs = [fmt_iface(a) for a in as_list(it.get("addresses"), 8, "addresses")]
+            need(addrs, "at least one address is required, for example 10.8.0.2/24")
+            own = [ipaddress.ip_interface(a).network for a in addrs]
+            for n in own:
+                for iface, ln in local:
+                    need(iface == name or ln.version != n.version or not ln.overlaps(n),
+                         f"the address network {n} overlaps the local network {ln} on {iface}")
+            dns = [ip_str(d) for d in as_list(it.get("dns"), 4, "dns")]
+            mtu = it.get("mtu")
+            if mtu in (None, ""):
+                mtu = None
+            else:
+                need(isinstance(mtu, int) and not isinstance(mtu, bool) and 576 <= mtu <= 9000,
+                     "MTU must be a number from 576 to 9000")
+            port = it.get("listen_port")
+            if port in (None, ""):
+                port = None
+            else:
+                need(isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535,
+                     "the listen port must be 1 to 65535")
+                need(port not in ports, f"port {port} is already used by {ports.get(port)}")
+                ports[port] = name
+            peers_in = it.get("peers", [])
+            need(isinstance(peers_in, list) and len(peers_in) <= 64, "too many peers")
+            peers, seen_keys, seen_allowed, endpoints = [], set(), set(), []
+            for i, p in enumerate(peers_in, 1):
+                try:
+                    need(isinstance(p, dict), "invalid peer")
+                    pub = check_b64_key(p.get("public_key"))
+                    need(pub not in seen_keys, "the same public key is listed twice")
+                    seen_keys.add(pub)
+                    psk = p.get("psk_id") or ""
+                    if psk:
+                        need(isinstance(psk, str) and ID_RE.fullmatch(psk) is not None
+                             and (WG_DIR / f"{name}.{psk}.psk").is_file(),
+                             "the stored preshared key is missing: import it again")
+                    ep, ep_ip = norm_endpoint(p.get("endpoint"))
+                    ka = p.get("keepalive")
+                    if ka in (None, ""):
+                        ka = None
+                    else:
+                        need(isinstance(ka, int) and not isinstance(ka, bool) and 0 <= ka <= 65535,
+                             "keepalive must be 0 to 65535 seconds")
+                    label = p.get("label") or ""
+                    need(isinstance(label, str) and re.fullmatch(r"[A-Za-z0-9 ._-]{0,40}", label) is not None,
+                         "the label may use letters, digits, spaces and . _ - (40 characters at most)")
+                    allowed = []
+                    for a in as_list(p.get("allowed_ips"), 32, "allowed IPs"):
+                        try:
+                            net = ipaddress.ip_network(a, strict=False)
+                        except ValueError:
+                            raise Bad(f"invalid allowed IP {a!r}")
+                        need(not (net.is_loopback or net.is_multicast or net.is_link_local or net.is_unspecified),
+                             f"{net} is not a usable network")
+                        need(net.prefixlen >= (8 if net.version == 4 else 16),
+                             f"{net} is too broad. Sending everything through a VPN isn't supported yet; list specific networks")
+                        for iface, ln in local:
+                            need(iface == name or ln.version != net.version or not ln.overlaps(net),
+                                 f"{net} overlaps the local network {ln} on {iface}, which would break local traffic")
+                        need(admin_ip is None or admin_ip.version != net.version
+                             or admin_ip not in net or admin_dev == name,
+                             f"{net} includes your own address {admin_ip}, which would cut you off")
+                        s = str(net)
+                        need(s not in seen_allowed, f"{s} is listed for more than one peer")
+                        seen_allowed.add(s)
+                        allowed.append(s)
+                    need(allowed, "list at least one allowed IP")
+                    if ep_ip is not None:
+                        endpoints.append((ep_ip, ep))
+                    peers.append({"label": label, "public_key": pub, "psk_id": psk, "endpoint": ep,
+                                  "allowed_ips": allowed, "keepalive": ka})
+                except Bad as e:
+                    raise Bad(f"peer {i}: {e}")
+            for ip, ep in endpoints:
+                for s in seen_allowed:
+                    n = ipaddress.ip_network(s)
+                    need(n.version != ip.version or ip not in n,
+                         f"the endpoint {ep} lies inside the allowed network {s}, which would send the tunnel's own traffic into itself")
+            claimed += [(name, n) for n in own] + [(name, ipaddress.ip_network(s)) for s in seen_allowed]
+            out[name] = {"kind": "wireguard", "key_id": kid, "listen_port": port, "addresses": addrs,
+                         "dns": dns, "mtu": mtu, "peers": peers}
+        except Bad as e:
+            raise Bad(f"{name}: {e}")
+    for i, (a, na) in enumerate(claimed):
+        for b, nb in claimed[i + 1:]:
+            need(a == b or na.version != nb.version or not na.overlaps(nb),
+                 f"{a} and {b} both claim overlapping networks ({na} and {nb})")
+    return out
+
+
+def validate(state, old, admin_ip=None):
+    need(isinstance(state, dict) and isinstance(state.get("items"), dict), "invalid state")
+    items_in = state["items"]
+    need(len(items_in) <= 64, "too many items")
+    phys = phys_names()
+    existing = {p.name for p in Path("/sys/class/net").iterdir()}
+    old_virtual = virtual_names(old)
+    for name, it in items_in.items():
+        need(isinstance(name, str) and NAME_RE.fullmatch(name) is not None and name != "lo",
+             f"invalid interface name {name!r}")
+        need(isinstance(it, dict) and it.get("kind") in KINDS, f"{name}: unknown type")
+    out, used, vlan_keys = {}, {}, set()
+    for name, it in items_in.items():
+        try:
+            kind = it["kind"]
+            n = norm_ip(it)
+            n["kind"] = kind
+            if kind == "ethernet":
+                need(name in phys, "this is not a physical network interface")
+            else:
+                need(name not in phys, "that name belongs to a physical interface")
+                need(name not in existing or name in old_virtual,
+                     "an interface with that name already exists on this system")
+            if kind == "vlan":
+                link, vid = it.get("link"), it.get("id")
+                need(isinstance(link, str) and link in items_in
+                     and items_in[link].get("kind") in ("ethernet", "bond", "bridge"),
+                     "the parent must be a managed interface, bond or bridge from this list")
+                need(isinstance(vid, int) and not isinstance(vid, bool) and 1 <= vid <= 4094,
+                     "the VLAN ID must be a number from 1 to 4094")
+                need((link, vid) not in vlan_keys, "that VLAN ID is already used on that parent")
+                vlan_keys.add((link, vid))
+                n.update(link=link, id=vid)
+            elif kind in ("bridge", "bond"):
+                members = as_list(it.get("members"), 16, "members")
+                need(len(set(members)) == len(members), "a member is listed twice")
+                for m in members:
+                    ok = m in phys or (kind == "bridge" and m in items_in
+                                       and items_in[m].get("kind") == "bond")
+                    need(ok, f"member {m!r} must be a physical interface"
+                         + (" or a bond" if kind == "bridge" else ""))
+                    need(m not in items_in or items_in[m].get("kind") == "bond",
+                         f"{m!r} has its own settings in this list; remove them first")
+                    need(m not in used, f"{m!r} is already a member of {used.get(m)}")
+                    used[m] = name
+                mac = str(it.get("mac") or "").strip().lower()
+                need(not mac or (MAC_RE.fullmatch(mac) is not None and not int(mac[:2], 16) & 1
+                                 and mac != "00:00:00:00:00:00"), "invalid MAC address")
+                n.update(members=members, mac=mac)
+                if kind == "bridge":
+                    n["stp"] = bool(it.get("stp"))
+                else:
+                    mode = it.get("mode", "active-backup")
+                    miimon = it.get("miimon", 100)
+                    miimon = 100 if miimon in (None, "") else miimon
+                    need(mode in BOND_MODES, "unknown bond mode")
+                    need(isinstance(miimon, int) and not isinstance(miimon, bool)
+                         and 10 <= miimon <= 1000, "the link check interval must be 10 to 1000 ms")
+                    n.update(mode=mode, miimon=miimon)
+            out[name] = n
+        except Bad as e:
+            raise Bad(f"{name}: {e}")
+    for m, owner in used.items():
+        n = out.get(m)
+        if n and n["kind"] == "bond":
+            need(not (n["dhcp4"] or n["dhcp6"] or n["addresses"] or n["routes"]
+                      or n["gateway4"] or n["gateway6"]),
+                 f"{m} is a member of {owner}, so it can't have its own IP settings")
+    wg = validate_wg(state.get("wireguard", {}), out, old, admin_ip)
+    return {"version": 1, "items": out, "wireguard": wg}
+
+
+# ---------- rendering ----------
+
+def render_network(name, it, children):
+    dh = {(False, False): "no", (True, False): "ipv4",
+          (False, True): "ipv6", (True, True): "yes"}[(it["dhcp4"], it["dhcp6"])]
+    net = [f"DHCP={dh}"]
+    net += [f"Address={a}" for a in it["addresses"]]
+    for g in (it["gateway4"], it["gateway6"]):
+        if g:
+            net.append(f"Gateway={g}")
+    net += [f"DNS={d}" for d in it["dns"]]
+    net += [f"VLAN={v}" for v in sorted(children)]
+    if it["kind"] == "bridge":
+        net.append("ConfigureWithoutCarrier=yes")
+    text = HEADER + f"\n[Match]\nName={name}\n\n[Network]\n" + "\n".join(net) + "\n"
+    if it["mtu"]:
+        text += f"\n[Link]\nMTUBytes={it['mtu']}\n"
+    if it["dhcp4"]:
+        text += "\n[DHCPv4]\nRouteMetric=100\nUseMTU=yes\n"
+    for r in it["routes"]:
+        p = r.split()
+        text += f"\n[Route]\nDestination={p[0]}\nGateway={p[2]}\n"
+        if len(p) == 5:
+            text += f"Metric={p[4]}\n"
+    return text
+
+
+def render_member(name, kind, owner, children):
+    key = "Bridge" if kind == "bridge" else "Bond"
+    net = [f"{key}={owner}", "LinkLocalAddressing=no", "IPv6AcceptRA=no"]
+    net += [f"VLAN={v}" for v in sorted(children)]
+    return HEADER + f"\n[Match]\nName={name}\n\n[Network]\n" + "\n".join(net) + "\n"
+
+
+def render_netdev(name, it):
+    lines = [f"Name={name}", f"Kind={it['kind']}"]
+    if it.get("mac"):
+        lines.append(f"MACAddress={it['mac']}")
+    text = HEADER + "\n[NetDev]\n" + "\n".join(lines) + "\n"
+    if it["kind"] == "vlan":
+        text += f"\n[VLAN]\nId={it['id']}\n"
+    elif it["kind"] == "bridge":
+        text += f"\n[Bridge]\nSTP={'yes' if it['stp'] else 'no'}\n"
+    elif it["kind"] == "bond":
+        text += f"\n[Bond]\nMode={it['mode']}\nMIIMonitorSec={it['miimon']}ms\n"
+    return text
+
+
+def render_wg_netdev(name, it):
+    text = (HEADER + f"\n[NetDev]\nName={name}\nKind=wireguard\n\n[WireGuard]\n"
+            f"PrivateKeyFile={WG_DIR}/{name}.{it['key_id']}.key\n")
+    if it.get("listen_port"):
+        text += f"ListenPort={it['listen_port']}\n"
+    for p in it["peers"]:
+        text += f"\n[WireGuardPeer]\nPublicKey={p['public_key']}\n"
+        if p.get("psk_id"):
+            text += f"PresharedKeyFile={WG_DIR}/{name}.{p['psk_id']}.psk\n"
+        for a in p["allowed_ips"]:
+            text += f"AllowedIPs={a}\n"
+        if p.get("endpoint"):
+            text += f"Endpoint={p['endpoint']}\n"
+        if p.get("keepalive"):
+            text += f"PersistentKeepalive={p['keepalive']}\n"
+    return text
+
+
+def render_wg_network(name, it):
+    net = ["DHCP=no", "LinkLocalAddressing=no"]
+    net += [f"Address={a}" for a in it["addresses"]]
+    net += [f"DNS={d}" for d in it["dns"]]
+    text = HEADER + f"\n[Match]\nName={name}\n\n[Network]\n" + "\n".join(net) + "\n"
+    if it["mtu"]:
+        text += f"\n[Link]\nMTUBytes={it['mtu']}\n"
+    own = [ipaddress.ip_interface(a).network for a in it["addresses"]]
+    seen = set()
+    for p in it["peers"]:
+        for a in p["allowed_ips"]:
+            n = ipaddress.ip_network(a)
+            if a in seen or any(n.version == o.version and n.subnet_of(o) for o in own):
+                continue
+            seen.add(a)
+            text += f"\n[Route]\nDestination={a}\n"
+    return text
+
+
+def render(state):
+    items = state["items"]
+    children, member_of = {}, {}
+    for n, it in items.items():
+        if it["kind"] == "vlan":
+            children.setdefault(it["link"], []).append(n)
+        if it["kind"] in ("bridge", "bond"):
+            for m in it["members"]:
+                member_of[m] = (it["kind"], n)
+    files = {}
+    for n, it in items.items():
+        if it["kind"] != "ethernet":
+            files[f"{PREFIX}{n}.netdev"] = render_netdev(n, it)
+        if n in member_of:
+            files[f"{PREFIX}{n}.network"] = render_member(n, *member_of[n], children.get(n, []))
+        else:
+            files[f"{PREFIX}{n}.network"] = render_network(n, it, children.get(n, []))
+    for m, (kind, owner) in member_of.items():
+        if m not in items:
+            files[f"{PREFIX}{m}.network"] = render_member(m, kind, owner, [])
+    for n, it in state.get("wireguard", {}).items():
+        files[f"{PREFIX}{n}.netdev"] = render_wg_netdev(n, it)
+        files[f"{PREFIX}{n}.network"] = render_wg_network(n, it)
+    return files
+
+
+# ---------- applying, with the safety net ----------
+
+def snapshot():
+    shutil.rmtree(SNAP_DIR, ignore_errors=True)
+    SNAP_DIR.mkdir(parents=True, mode=0o700)
+    NETDIR.mkdir(parents=True, exist_ok=True)
+    for p in NETDIR.glob(PREFIX + "*"):
+        shutil.copy2(p, SNAP_DIR / p.name)
+    if STATE_FILE.exists():
+        shutil.copy2(STATE_FILE, SNAP_DIR / "network.json")
+
+
+def write_files(files):
+    NETDIR.mkdir(parents=True, exist_ok=True)
+    for p in NETDIR.glob(PREFIX + "*"):
+        p.unlink()
+    for fname, text in files.items():
+        tmp = NETDIR / (fname + ".tmp")
+        tmp.write_text(text)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, NETDIR / fname)
+
+
+def reload_and_reconfigure(names):
+    run("networkctl", "reload")
+    time.sleep(1.5)
+    for n in sorted(names):
+        if (Path("/sys/class/net") / n).exists():
+            run("networkctl", "reconfigure", n)
+
+
+def wait_for_devices(names, seconds=8):
+    end = time.time() + seconds
+    missing = set(names)
+    while missing and time.time() < end:
+        missing = {n for n in missing if not (Path("/sys/class/net") / n).exists()}
+        if missing:
+            time.sleep(0.5)
+    return missing
+
+
+def schedule_rollback(timeout):
+    run("systemctl", "stop", f"{TIMER}.timer")
+    run("systemctl", "reset-failed", f"{TIMER}.service", f"{TIMER}.timer")
+    r = run("systemd-run", "--quiet", f"--unit={TIMER}", f"--on-active={timeout}s",
+            "--timer-property=AccuracySec=1s", HELPER, "rollback")
+    need(r.returncode == 0, "could not schedule the automatic rollback, so nothing was changed: "
+         + (r.stderr or "").strip())
+
+
+def _rollback_locked():
+    cur = load_state()
+    snap = load_state(SNAP_DIR / "network.json")
+    stale = set()
+    for n in set(cur["wireguard"]) | set(snap["wireguard"]):
+        a, b = NETDIR / f"{PREFIX}{n}.netdev", SNAP_DIR / f"{PREFIX}{n}.netdev"
+        try:
+            same = a.read_text() == b.read_text()
+        except OSError:
+            same = False
+        if not same:
+            stale.add(n)
+    NETDIR.mkdir(parents=True, exist_ok=True)
+    for p in NETDIR.glob(PREFIX + "*"):
+        p.unlink()
+    for p in SNAP_DIR.glob(PREFIX + "*"):
+        shutil.copy2(p, NETDIR / p.name)
+    if (SNAP_DIR / "network.json").exists():
+        shutil.copy2(SNAP_DIR / "network.json", STATE_FILE)
+    else:
+        STATE_FILE.unlink(missing_ok=True)
+    for n in sorted((virtual_names(cur) - virtual_names(snap)) | stale):
+        run("ip", "link", "delete", n)
+    reload_and_reconfigure(all_names(cur) | all_names(snap))
+    PENDING.unlink(missing_ok=True)
+    run("systemctl", "stop", f"{TIMER}.timer")
+
+
+def do_rollback():
+    with Lock():
+        if not PENDING.exists():
+            return False
+        _rollback_locked()
+        return True
+
+
+# ---------- key files ----------
+
+def referenced_keys(state):
+    refs = set()
+    for name, it in state.get("wireguard", {}).items():
+        refs.add(f"{name}.{it.get('key_id')}.key")
+        for p in it.get("peers", []):
+            if p.get("psk_id"):
+                refs.add(f"{name}.{p['psk_id']}.psk")
+    return refs
+
+
+def cleanup_keys(state, drop):
+    if not WG_DIR.is_dir():
+        return
+    refs = referenced_keys(state)
+    now = time.time()
+    for p in WG_DIR.iterdir():
+        m = KEYFILE_RE.fullmatch(p.name)
+        if m is None or p.name in refs:
+            continue
+        try:
+            if m[1] in drop or now - p.stat().st_mtime > KEEP_DAYS * 86400:
+                p.unlink()
+        except OSError:
+            pass
+
+
+def pubkey_of(secret):
+    r = subprocess.run([WG, "pubkey"], input=secret.strip() + "\n", capture_output=True,
+                       text=True, env=ENV, timeout=15)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+# ---------- commands: network ----------
+
+def cmd_state():
+    pending = None
+    try:
+        info = json.loads(PENDING.read_text())
+        pending = {"seconds_left": max(0, int(info["deadline"] - time.time()))}
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    st = load_state()
+    public = {}
+    have = Path(WG).exists()
+    if have:
+        for n, it in st["wireguard"].items():
+            kid = it.get("key_id")
+            if isinstance(kid, str) and ID_RE.fullmatch(kid):
+                try:
+                    pub = pubkey_of((WG_DIR / f"{n}.{kid}.key").read_text())
+                except OSError:
+                    pub = ""
+                if pub:
+                    public[kid] = pub
+    print(json.dumps({"state": st, "pending": pending, "physical": sorted(phys_names()),
+                      "wg": {"available": have, "public": public}}))
+
+
+def cmd_apply():
+    raw = sys.stdin.read(MAX_INPUT + 1)
+    need(len(raw) <= MAX_INPUT, "request too large")
+    try:
+        req = json.loads(raw)
+    except ValueError:
+        raise Bad("invalid request")
+    need(isinstance(req, dict), "invalid request")
+    timeout = req.get("timeout", 90)
+    need(isinstance(timeout, int) and not isinstance(timeout, bool) and 30 <= timeout <= 600,
+         "the rollback time must be 30 to 600 seconds")
+    scope = req.get("scope", "network")
+    need(scope in ("network", "vpn"), "invalid scope")
+    incoming = req.get("state")
+    need(isinstance(incoming, dict), "invalid state")
+    need(isinstance(incoming.get("items" if scope == "network" else "wireguard"), dict), "invalid state")
+    try:
+        admin_ip = ipaddress.ip_address(str(req.get("admin_ip", "")))
+    except ValueError:
+        admin_ip = None
+    with Lock():
+        need(not PENDING.exists(), "A previous change is still waiting to be kept or reverted")
+        old = load_state()
+        merged = {
+            "version": 1,
+            "items": incoming["items"] if scope == "network" else old["items"],
+            "wireguard": incoming["wireguard"] if scope == "vpn" else old["wireguard"],
+        }
+        new = validate(merged, old, admin_ip)
+        files = render(new)
+        changed = []
+        for n in new["wireguard"]:
+            fname = f"{PREFIX}{n}.netdev"
+            try:
+                same = (NETDIR / fname).read_text() == files[fname]
+            except OSError:
+                same = False
+            if not same:
+                changed.append(n)
+        snapshot()
+        schedule_rollback(timeout)
+        PENDING.write_text(json.dumps({
+            "deadline": time.time() + timeout, "timeout": timeout,
+            "drop": sorted(set(old["wireguard"]) - set(new["wireguard"])),
+        }))
+        try:
+            write_files(files)
+            save_state(new)
+            for n in sorted(virtual_names(old) - virtual_names(new)):
+                run("ip", "link", "delete", n)
+            for n in changed:
+                run("ip", "link", "delete", n)
+            reload_and_reconfigure(all_names(old) | all_names(new))
+            missing = wait_for_devices(virtual_names(new))
+            need(not missing, "these interfaces were not created: " + ", ".join(sorted(missing))
+                 + (" (is the WireGuard kernel module available?)" if missing & set(new["wireguard"]) else ""))
+        except Exception as e:
+            _rollback_locked()
+            raise Bad(f"the change failed and was rolled back: {e}")
+    print(json.dumps({"ok": True, "seconds": timeout}))
+
+
+def cmd_confirm():
+    with Lock():
+        need(PENDING.exists(),
+             "Nothing is waiting for confirmation (it may already have been reverted)")
+        try:
+            drop = set(json.loads(PENDING.read_text()).get("drop", []))
+        except (OSError, ValueError, AttributeError):
+            drop = set()
+        PENDING.unlink()
+        run("systemctl", "stop", f"{TIMER}.timer")
+        shutil.rmtree(SNAP_DIR, ignore_errors=True)
+        cleanup_keys(load_state(), drop)
+    print(json.dumps({"ok": True}))
+
+
+def cmd_revert():
+    need(do_rollback(), "Nothing to revert")
+    print(json.dumps({"ok": True}))
+
+
+def cmd_rollback():
+    do_rollback()
+
+
+def cmd_connections():
+    sys.stdout.write(run("ss", "-H", "-tunap").stdout)
+
+
+# ---------- commands: WireGuard ----------
+
+def cmd_wg_status():
+    if not Path(WG).exists():
+        print(json.dumps({"available": False, "now": int(time.time()), "interfaces": []}))
+        return
+    ifaces = {}
+    for line in run(WG, "show", "all", "dump").stdout.splitlines():
+        p = line.split("\t")
+        if len(p) == 5:        # interface: name, PRIVATE KEY (dropped), public key, port, fwmark
+            ifaces[p[0]] = {"name": p[0], "public_key": p[2],
+                            "listen_port": int(p[3]) if p[3].isdigit() else None, "peers": []}
+        elif len(p) == 9 and p[0] in ifaces:   # peer: name, key, PRESHARED KEY (dropped), ...
+            ifaces[p[0]]["peers"].append({
+                "public_key": p[1],
+                "endpoint": "" if p[3] == "(none)" else p[3],
+                "allowed_ips": [] if p[4] == "(none)" else p[4].split(","),
+                "latest_handshake": int(p[5]) if p[5].isdigit() else 0,
+                "rx": int(p[6]) if p[6].isdigit() else 0,
+                "tx": int(p[7]) if p[7].isdigit() else 0,
+                "keepalive": p[8],
+            })
+    print(json.dumps({"available": True, "now": int(time.time()), "interfaces": list(ifaces.values())}))
+
+
+def cmd_wg_key():
+    need(Path(WG).exists(), "WireGuard tools are not installed (sudo apt install wireguard-tools)")
+    try:
+        req = json.loads(sys.stdin.read(4096))
+    except ValueError:
+        raise Bad("invalid request")
+    need(isinstance(req, dict), "invalid request")
+    op, name, value = req.get("op"), req.get("name"), req.get("value", "")
+    need(op in ("generate", "import-private", "import-psk"), "unknown operation")
+    need(isinstance(name, str) and NAME_RE.fullmatch(name) is not None and name != "lo",
+         "invalid interface name")
+    try:
+        gid = grp.getgrnam("systemd-network").gr_gid
+    except KeyError:
+        raise Bad("the systemd-network group does not exist on this system")
+    with Lock():
+        WG_DIR.mkdir(parents=True, exist_ok=True)
+        os.chown(WG_DIR, 0, gid)
+        os.chmod(WG_DIR, 0o750)
+        need(len(list(WG_DIR.glob(f"{name}.*"))) < 40,
+             "too many stored keys for this name; apply or discard some first")
+        if op == "generate":
+            r = run(WG, "genkey")
+            need(r.returncode == 0 and r.stdout.strip(), "key generation failed")
+            secret = r.stdout.strip()
+        else:
+            secret = check_b64_key(value.strip() if isinstance(value, str) else "")
+        pub = ""
+        if op != "import-psk":
+            pub = pubkey_of(secret)
+            need(pub, "that isn't a valid WireGuard private key")
+        kid = secrets.token_hex(4)
+        path = WG_DIR / f"{name}.{kid}.{'psk' if op == 'import-psk' else 'key'}"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+        try:
+            os.fchown(fd, 0, gid)
+            os.write(fd, (secret + "\n").encode())
+        finally:
+            os.close(fd)
+    print(json.dumps({"id": kid, "public": pub}))
+
+
+# ---------- commands: proxy ----------
+
+def check_proxy_url(s):
+    s = s.strip() if isinstance(s, str) else ""
+    if not s:
+        return ""
+    m = PROXY_RE.fullmatch(s)
+    need(m is not None, "a proxy address looks like http://host:3128 (no user name or password)")
+    need(len(m["host"]) <= 253, "the proxy host name is too long")
+    if m["port"]:
+        need(1 <= int(m["port"]) <= 65535, "invalid proxy port")
+    return s.rstrip("/")
+
+
+def proxy_defaults():
+    return {"enabled": False, "http": "", "https": "", "no_proxy": [], "apt": True, "environment": True}
+
+
+def cmd_proxy_get():
+    out = proxy_defaults()
+    try:
+        s = json.loads(PROXY_FILE.read_text())
+        if isinstance(s, dict):
+            for k in out:
+                if k in s:
+                    out[k] = s[k]
+    except (OSError, ValueError):
+        pass
+    print(json.dumps(out))
+
+
+def write_env_block(lines):
+    try:
+        text = ENV_FILE.read_text()
+    except FileNotFoundError:
+        text = ""
+    old = text.splitlines()
+    stripped = [l.strip() for l in old]
+    if ENV_BEGIN in stripped:
+        need(ENV_END in stripped and stripped.index(ENV_END) > stripped.index(ENV_BEGIN),
+             "/etc/environment has an unfinished panel block; fix it by hand first")
+        a, b = stripped.index(ENV_BEGIN), stripped.index(ENV_END)
+        old = old[:a] + old[b + 1:]
+    while old and old[-1] == "":
+        old.pop()
+    if lines:
+        old += ["", ENV_BEGIN, *lines, ENV_END]
+    new = "\n".join(old) + ("\n" if old else "")
+    tmp = ENV_FILE.with_name("environment.adminpanel.tmp")
+    tmp.write_text(new)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, ENV_FILE)
+
+
+def cmd_proxy_set():
+    try:
+        req = json.loads(sys.stdin.read(MAX_INPUT + 1))
+    except ValueError:
+        raise Bad("invalid request")
+    need(isinstance(req, dict), "invalid request")
+    enabled = bool(req.get("enabled"))
+    http = check_proxy_url(req.get("http"))
+    https = check_proxy_url(req.get("https")) or http
+    need(not enabled or http, "enter a proxy address, or turn the proxy off")
+    entries = as_list(req.get("no_proxy"), 40, "the no-proxy list")
+    for e in entries:
+        need(NOPROXY_RE.fullmatch(e) is not None, f"invalid no-proxy entry {e!r}")
+    no_proxy = []
+    for e in ["localhost", "127.0.0.1", "::1"] + entries:
+        if e not in no_proxy:
+            no_proxy.append(e)
+    apt, envf = bool(req.get("apt", True)), bool(req.get("environment", True))
+    with Lock():
+        if enabled and apt:
+            APT_FILE.write_text("// Managed by the admin panel. Changes made by hand will be overwritten.\n"
+                                f'Acquire::http::Proxy "{http}";\nAcquire::https::Proxy "{https}";\n')
+            os.chmod(APT_FILE, 0o644)
+        else:
+            APT_FILE.unlink(missing_ok=True)
+        if enabled and envf:
+            joined = ",".join(no_proxy)
+            write_env_block([f'http_proxy="{http}"', f'HTTP_PROXY="{http}"',
+                             f'https_proxy="{https}"', f'HTTPS_PROXY="{https}"',
+                             f'no_proxy="{joined}"', f'NO_PROXY="{joined}"'])
+        else:
+            write_env_block(None)
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = PROXY_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"enabled": enabled, "http": http, "https": https if https != http else "",
+                                   "no_proxy": entries, "apt": apt, "environment": envf}, indent=1))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, PROXY_FILE)
+    print(json.dumps({"ok": True}))
+
+
+def main():
+    table = {"state": cmd_state, "apply": cmd_apply, "confirm": cmd_confirm, "revert": cmd_revert,
+             "rollback": cmd_rollback, "connections": cmd_connections, "wg-status": cmd_wg_status,
+             "wg-key": cmd_wg_key, "proxy-get": cmd_proxy_get, "proxy-set": cmd_proxy_set}
+    cmd = sys.argv[1] if len(sys.argv) == 2 else ""
+    if cmd not in table:
+        print("usage: " + " | ".join(table), file=sys.stderr)
+        sys.exit(2)
+    try:
+        table[cmd]()
+    except Bad as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
+
+
+main()

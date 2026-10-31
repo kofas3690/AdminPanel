@@ -1,0 +1,30 @@
+#!/bin/sh
+set -e
+case "$1" in
+remove|purge)
+    for n in adminpanel adminpanel-apt adminpanel-ufw adminpanel-users adminpanel-net adminpanel-disk adminpanel-userunits; do
+        rm -f "/etc/sudoers.d/$n"
+    done
+    rm -f /etc/nginx/sites-enabled/adminpanel.conf
+    rm -f /etc/systemd/system/multi-user.target.wants/adminpanel.service \
+          /etc/systemd/system/multi-user.target.wants/adminpanel-net-recover.service
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload || true
+        if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
+            systemctl reload nginx >/dev/null 2>&1 || true
+        fi
+    fi
+    ;;
+esac
+if [ "$1" = purge ]; then
+    rm -rf /opt/adminpanel
+    rm -f /etc/nginx/sites-available/adminpanel.conf /etc/nginx/snippets/adminpanel-upload.conf \
+          /etc/nginx/snippets/adminpanel-disks.conf /etc/ssl/certs/adminpanel.crt \
+          /etc/ssl/private/adminpanel.key /var/lib/adminpanel/port /var/log/adminpanel-pip.log
+    deluser --system adminpanel >/dev/null 2>&1 || true
+    delgroup --system adminpanel >/dev/null 2>&1 || true
+    echo "adminpanel: purged. Settings the panel made for this machine were left in place on purpose:" >&2
+    echo "  network files /etc/systemd/network/05-ap-*, lines marked 'adminpanel' in /etc/fstab and /etc/crypttab," >&2
+    echo "  and RAID, VPN and disk-job data under /var/lib/adminpanel. Remove them by hand if you want them gone." >&2
+fi
+exit 0

@@ -1,0 +1,17 @@
+[Unit]
+Description=Admin panel for Ubuntu and Debian servers
+After=network.target
+
+[Service]
+User=adminpanel
+Group=adminpanel
+WorkingDirectory=/opt/adminpanel
+Environment=COOKIE_SECURE=1
+ExecStart=/opt/adminpanel/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=on-failure
+RestartSec=3
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

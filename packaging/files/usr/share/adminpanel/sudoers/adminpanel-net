@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-net state, /usr/local/sbin/adminpanel-net apply, /usr/local/sbin/adminpanel-net confirm, /usr/local/sbin/adminpanel-net revert, /usr/local/sbin/adminpanel-net connections, /usr/local/sbin/adminpanel-net wg-status, /usr/local/sbin/adminpanel-net wg-key, /usr/local/sbin/adminpanel-net wg-peer, /usr/local/sbin/adminpanel-net proxy-get, /usr/local/sbin/adminpanel-net proxy-set

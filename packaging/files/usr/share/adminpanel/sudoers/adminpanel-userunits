@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-userunits users, /usr/local/sbin/adminpanel-userunits list, /usr/local/sbin/adminpanel-userunits detail, /usr/local/sbin/adminpanel-userunits logs, /usr/local/sbin/adminpanel-userunits act, /usr/local/sbin/adminpanel-userunits manager

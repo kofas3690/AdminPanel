@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-ufw status, /usr/local/sbin/adminpanel-ufw added, /usr/local/sbin/adminpanel-ufw enable, /usr/local/sbin/adminpanel-ufw allow *, /usr/local/sbin/adminpanel-ufw delete *

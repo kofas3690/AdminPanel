@@ -1,0 +1,95 @@
+#!/bin/bash
+# adminpanel-selfcheck: checks an installation and prints PASS, WARN and FAIL lines.
+set -u
+APP=/opt/adminpanel
+PY="$APP/.venv/bin/python"
+STATE=/var/lib/adminpanel
+fails=0; warns=0
+ok()   { printf 'PASS  %s\n' "$*"; }
+bad()  { printf 'FAIL  %s\n' "$*"; fails=$((fails + 1)); }
+note() { printf 'WARN  %s\n' "$*"; warns=$((warns + 1)); }
+[ "$(id -u)" -eq 0 ] || { echo "run this with sudo"; exit 2; }
+
+echo "Admin panel $(cat "$APP/VERSION" 2>/dev/null || echo '?') on $(. /etc/os-release; echo "$PRETTY_NAME")"
+echo
+
+# ---- service and Python ----
+if systemctl is-active --quiet adminpanel.service; then ok "adminpanel.service is running"
+else bad "adminpanel.service is not running (see: journalctl -u adminpanel -n 30)"; fi
+
+listen=$(ss -H -ltn 'sport = :8000' 2>/dev/null | awk '{print $4}')
+if [ -z "$listen" ]; then bad "nothing is listening on port 8000"
+elif printf '%s\n' "$listen" | grep -qvE '^(127\.0\.0\.1|\[::1\]):8000$'; then bad "port 8000 can be reached from other machines: $listen"
+else ok "the application listens on the loopback address only"; fi
+
+if out=$("$PY" -c 'import fastapi, uvicorn, psutil, argon2, pyotp, qrcode, paramiko, pydantic; print("fastapi", fastapi.__version__, "pydantic", pydantic.VERSION)' 2>&1); then ok "Python packages import ($out)"
+else bad "Python packages: $(printf '%s' "$out" | tail -n 1)"; fi
+
+if out=$(runuser -u adminpanel -- /bin/sh -c "cd $APP && timeout 60 $PY -c 'import app; print(len(app.app.routes))'" 2>&1); then ok "the application loads ($out routes)"
+else bad "the application does not load: $(printf '%s' "$out" | tail -n 1)"; fi
+
+# ---- sudo rules and root helpers ----
+for n in adminpanel adminpanel-apt adminpanel-ufw adminpanel-users adminpanel-net adminpanel-disk adminpanel-userunits; do
+    [ -f "/etc/sudoers.d/$n" ] || bad "missing sudo rule /etc/sudoers.d/$n"
+done
+if visudo -c >/dev/null 2>&1; then ok "the sudo configuration is valid"; else bad "the sudo configuration is invalid"; fi
+
+if sudo -u adminpanel sudo -n /usr/bin/id >/dev/null 2>&1; then bad "the panel account can run arbitrary commands as root!"
+else ok "the panel account cannot run arbitrary commands as root"; fi
+
+for h in apt ufw users net disk userunits; do
+    p="/usr/local/sbin/adminpanel-$h"
+    if [ -x "$p" ] && [ "$(stat -c '%U:%a' "$p")" = "root:755" ]; then :; else bad "$p is missing or has wrong ownership or permissions"; fi
+done
+ok "root helpers are present and root-owned"
+
+smoke() {
+    local name="$1"; shift
+    local out
+    if out=$(sudo -u adminpanel sudo -n "$@" 2>&1) && printf '%s' "$out" | "$PY" -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then ok "$name answers"
+    else note "$name did not answer: $(printf '%s' "$out" | head -c 100)"; fi
+}
+smoke "disk helper"       /usr/local/sbin/adminpanel-disk inventory
+smoke "network helper"    /usr/local/sbin/adminpanel-net state
+smoke "user-units helper" /usr/local/sbin/adminpanel-userunits users
+if out=$(sudo -u adminpanel sudo -n /usr/local/sbin/adminpanel-users list 2>&1) && printf '%s' "$out" | "$PY" -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then ok "accounts helper answers"
+else note "accounts helper did not answer"; fi
+if sudo -u adminpanel sudo -n /usr/local/sbin/adminpanel-ufw status >/dev/null 2>&1; then ok "firewall helper answers"
+else note "firewall helper did not answer (is ufw installed?)"; fi
+
+if runuser -u adminpanel -- journalctl -n 1 --no-pager -q >/dev/null 2>&1; then ok "the panel account can read the system journal"
+else note "the panel account cannot read the system journal (Logs pages will be empty)"; fi
+
+# ---- web server ----
+port=$(cat "$STATE/port" 2>/dev/null || true)
+if [ -z "$port" ]; then
+    note "the web server is not set up yet. Run: sudo adminpanel-setup"
+else
+    if systemctl is-active --quiet nginx; then ok "nginx is running"; else bad "nginx is not running"; fi
+    if nginx -t >/dev/null 2>&1; then ok "nginx configuration is valid"; else bad "nginx configuration is invalid (run: nginx -t)"; fi
+    c1=$(curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 "https://127.0.0.1:$port/login.html" 2>/dev/null || echo 000)
+    if [ "$c1" = 200 ]; then ok "the login page answers over HTTPS on port $port"; else bad "the login page returned HTTP $c1 on port $port"; fi
+    c2=$(curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 "https://127.0.0.1:$port/api/stats" 2>/dev/null || echo 000)
+    if [ "$c2" = 401 ]; then ok "protected pages refuse anonymous requests (401)"; else bad "protected API returned HTTP $c2 instead of 401"; fi
+fi
+
+# ---- data and permissions ----
+for f in users.json panel.db audit.log; do
+    if [ -f "$APP/$f" ] && [ "$(stat -c '%a' "$APP/$f")" != "600" ]; then bad "$APP/$f should be mode 600"; fi
+done
+[ -f "$APP/ssh_known_hosts" ] && ok "the SSH host key is pinned" || note "the SSH host key is not pinned (Terminal and File manager need: sudo adminpanel-setup ssh)"
+if [ -f "$APP/users.json" ]; then
+    n=$(runuser -u adminpanel -- "$PY" -c "import json; print(len(json.load(open('$APP/users.json'))))" 2>/dev/null || echo 0)
+    [ "$n" -gt 0 ] && ok "$n panel administrator(s) configured" || note "no panel administrator yet. Run: sudo adminpanel-setup user"
+else note "no panel administrator yet. Run: sudo adminpanel-setup user"; fi
+
+# ---- optional features ----
+systemctl is-active --quiet systemd-networkd || note "systemd-networkd is not the active network manager: the Network and VPN pages can look but not change settings"
+systemctl is-active --quiet ssh || systemctl is-active --quiet sshd || note "no SSH server is running (Terminal and File manager)"
+for t in "wg:WireGuard (wireguard-tools)" "pvs:LVM (lvm2)" "mdadm:RAID (mdadm)" "cryptsetup:encryption (cryptsetup)" "iscsiadm:iSCSI (open-iscsi)" "ufw:firewall (ufw)" "parted:partitioning (parted)"; do
+    command -v "${t%%:*}" >/dev/null 2>&1 || [ -x "/usr/sbin/${t%%:*}" ] || note "${t#*:} is not installed, so that feature is unavailable"
+done
+
+echo
+echo "$fails failed, $warns warnings"
+[ "$fails" -eq 0 ]

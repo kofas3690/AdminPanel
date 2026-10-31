@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-users list, /usr/local/sbin/adminpanel-users create *, /usr/local/sbin/adminpanel-users setpass *, /usr/local/sbin/adminpanel-users lock *, /usr/local/sbin/adminpanel-users unlock *, /usr/local/sbin/adminpanel-users delete *

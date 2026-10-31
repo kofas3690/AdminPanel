@@ -125,6 +125,8 @@ def redact(v):
 
 class DiscoverBody(BaseModel):
     portal: str = Field(min_length=1, max_length=300)
+    iface: str = Field(default="default", pattern=r"^(default|iser)$")
+    auth: dict[str, str] | None = None
 
 
 @router.post("/iscsi/discover")

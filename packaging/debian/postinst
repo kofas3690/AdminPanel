@@ -1,0 +1,72 @@
+#!/bin/sh
+set -e
+APP=/opt/adminpanel
+SHARE=/usr/share/adminpanel
+
+fail() { echo "adminpanel: $*" >&2; exit 1; }
+
+case "$1" in
+configure)
+    if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
+        fail "Python 3.10 or newer is required (this system has $(python3 -V 2>&1))"
+    fi
+
+    # 1. the service account (no login, no password)
+    if ! getent passwd adminpanel >/dev/null 2>&1; then
+        adduser --system --group --no-create-home --home "$APP" --shell /usr/sbin/nologin adminpanel >/dev/null
+    fi
+    if getent group systemd-journal >/dev/null 2>&1; then
+        usermod -aG systemd-journal adminpanel
+    fi
+    install -d -m 755 -o root -g root /var/lib/adminpanel
+
+    # 2. the Python environment
+    if [ ! -x "$APP/.venv/bin/python" ]; then
+        echo "adminpanel: creating the Python environment..."
+        python3 -m venv "$APP/.venv" || fail "could not create a virtual environment (is python3-venv installed?)"
+    fi
+    PIP="$APP/.venv/bin/pip --disable-pip-version-check --no-input -q"
+    : > /var/log/adminpanel-pip.log
+    installed=0
+    if [ -f "$SHARE/requirements.lock" ]; then
+        if $PIP install -r "$SHARE/requirements.lock" >>/var/log/adminpanel-pip.log 2>&1; then installed=1; fi
+    fi
+    if [ "$installed" = 0 ]; then
+        $PIP install -r "$SHARE/requirements.txt" >>/var/log/adminpanel-pip.log 2>&1 || {
+            tail -n 15 /var/log/adminpanel-pip.log >&2
+            fail "installing the Python packages failed (see /var/log/adminpanel-pip.log). The system needs internet access and, on unusual CPU types, a compiler (build-essential python3-dev libffi-dev)."
+        }
+    fi
+
+    # 3. ownership and permissions
+    chown -R adminpanel:adminpanel "$APP"
+    chmod 750 "$APP"
+    for f in users.json panel.db audit.log; do
+        if [ -f "$APP/$f" ]; then chmod 600 "$APP/$f"; fi
+    done
+
+    # 4. sudo rules (each one is checked before it is installed)
+    for f in "$SHARE"/sudoers/*; do
+        name=$(basename "$f")
+        visudo -cf "$f" >/dev/null 2>&1 || fail "refusing to install the invalid sudo rule $name"
+        install -m 0440 -o root -g root "$f" "/etc/sudoers.d/$name"
+    done
+    visudo -c >/dev/null 2>&1 || fail "the sudo configuration is invalid after installing the panel rules"
+
+    # 5. services
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload || true
+        systemctl enable adminpanel-net-recover.service >/dev/null 2>&1 || true
+        systemctl enable adminpanel.service >/dev/null 2>&1 || true
+        if [ -n "$2" ]; then
+            systemctl try-restart adminpanel.service || true
+        else
+            systemctl start adminpanel.service || true
+        fi
+    fi
+
+    echo
+    echo "adminpanel: installed. Next step:  sudo adminpanel-setup"
+    ;;
+esac
+exit 0

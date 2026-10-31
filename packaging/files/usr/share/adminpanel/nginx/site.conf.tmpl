@@ -1,0 +1,55 @@
+# Managed by the adminpanel package. Regenerate with: sudo adminpanel-setup tls
+map $http_upgrade $adminpanel_connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+limit_req_zone $binary_remote_addr zone=adminpanel_login:1m rate=5r/m;
+
+server {
+    listen @PORT@ ssl;
+@LISTEN6@
+    server_name _;
+    server_tokens off;
+
+    ssl_certificate     /etc/ssl/certs/adminpanel.crt;
+    ssl_certificate_key /etc/ssl/private/adminpanel.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    client_max_body_size 1m;
+    limit_req_status 429;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+
+    include snippets/adminpanel-upload.conf;
+    include snippets/adminpanel-disks.conf;
+
+    location = /api/login {
+        limit_req zone=adminpanel_login burst=5 nodelay;
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ~ ^/api/(logs|terminal)/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $adminpanel_connection_upgrade;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_buffering off;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

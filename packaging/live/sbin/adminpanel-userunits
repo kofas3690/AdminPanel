@@ -1,0 +1,253 @@
+#!/usr/bin/python3 -I
+import fnmatch, json, pwd, re, shutil, subprocess, sys, syslog
+from pathlib import Path
+
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+SYSTEMCTL = "/usr/bin/systemctl"
+JOURNALCTL = "/usr/bin/journalctl"
+LOGINCTL = "/usr/bin/loginctl"
+RUNUSER = shutil.which("runuser", path=ENV["PATH"]) or "/usr/sbin/runuser"
+TYPES = "service,socket,timer,path,target"
+USER_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+UNIT_RE = re.compile(
+    r"[A-Za-z0-9_](?:[A-Za-z0-9:_.@-]|\\x[0-9a-f]{2}){0,200}\.(service|socket|timer|path|target)")
+ACTIONS = ("start", "stop", "restart", "reload", "enable", "disable", "reset-failed")
+LOCKED = ("dbus*", "systemd-*")
+PROPS = ("Id,Description,LoadState,ActiveState,SubState,UnitFileState,FragmentPath,DropInPaths,"
+         "MainPID,ExecMainStatus,Result,ActiveEnterTimestamp,InactiveEnterTimestamp,"
+         "MemoryCurrent,TasksCurrent,CPUUsageNSec,NRestarts,Type,Documentation,"
+         "CanStart,CanStop,CanReload,Requires,Wants,BindsTo,PartOf,After,Before,"
+         "Conflicts,WantedBy,RequiredBy,TriggeredBy,Triggers")
+LISTS = {"Requires", "Wants", "BindsTo", "PartOf", "After", "Before", "Conflicts",
+         "WantedBy", "RequiredBy", "TriggeredBy", "Triggers", "DropInPaths", "Documentation"}
+UNSET = {"", "[not set]", "18446744073709551615", "n/a"}
+
+
+class Bad(Exception):
+    pass
+
+
+def need(cond, msg):
+    if not cond:
+        raise Bad(msg)
+
+
+def run(argv, timeout=30):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, errors="replace",
+                              env=ENV, timeout=timeout, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        raise Bad(f"{argv[0]} took too long")
+    except FileNotFoundError:
+        raise Bad(f"{argv[0]} is not installed")
+
+
+def read_req():
+    try:
+        req = json.loads(sys.stdin.read(8192))
+    except ValueError:
+        raise Bad("invalid request")
+    need(isinstance(req, dict), "invalid request")
+    return req
+
+
+def get_user(req):
+    name = req.get("user")
+    need(isinstance(name, str) and USER_RE.fullmatch(name) is not None, "invalid account name")
+    try:
+        pw = pwd.getpwnam(name)
+    except KeyError:
+        raise Bad("no such account")
+    need(1000 <= pw.pw_uid <= 59999, "only regular user accounts can be managed here")
+    return pw
+
+
+def check_unit(name):
+    need(isinstance(name, str) and UNIT_RE.fullmatch(name) is not None, "invalid unit name")
+    return name
+
+
+def running(pw):
+    return Path(f"/run/user/{pw.pw_uid}/systemd/private").exists()
+
+
+def usc(pw, *args, timeout=30):
+    """Run `systemctl --user` as the account itself, never as root."""
+    argv = [RUNUSER, "-u", pw.pw_name, "--", "/usr/bin/env", "-i",
+            f"HOME={pw.pw_dir}", f"XDG_RUNTIME_DIR=/run/user/{pw.pw_uid}",
+            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{pw.pw_uid}/bus",
+            "LC_ALL=C", "PATH=/usr/bin:/bin", SYSTEMCTL, "--user", *args]
+    return run(argv, timeout)
+
+
+def js(r):
+    try:
+        return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else []
+    except ValueError:
+        return []
+
+
+def us(v):
+    return v / 1e6 if isinstance(v, (int, float)) and v > 0 else None
+
+
+def policy(name):
+    kind = name.rsplit(".", 1)[1]
+    if kind == "target":
+        return [], "Targets can be viewed but not controlled from the web"
+    if any(fnmatch.fnmatchcase(name, p) for p in LOCKED):
+        return [], "Protected: this belongs to the account's session and is managed from the console"
+    acts = list(ACTIONS)
+    if kind != "service":
+        acts.remove("reload")
+    return acts, ""
+
+
+def log(msg):
+    syslog.openlog("adminpanel-userunits")
+    syslog.syslog(syslog.LOG_NOTICE, msg)
+
+
+# ---------------- commands ----------------
+
+def cmd_users():
+    out = []
+    for pw in sorted(pwd.getpwall(), key=lambda p: p.pw_uid):
+        if not 1000 <= pw.pw_uid <= 59999:
+            continue
+        out.append({"name": pw.pw_name, "uid": pw.pw_uid, "home": pw.pw_dir,
+                    "login": not pw.pw_shell.endswith(("nologin", "false")),
+                    "running": running(pw),
+                    "linger": Path(f"/var/lib/systemd/linger/{pw.pw_name}").exists()})
+    print(json.dumps(out))
+
+
+def cmd_list():
+    req = read_req()
+    pw = get_user(req)
+    empty = {"timers": {}, "sockets": {}}
+    if not running(pw):
+        print(json.dumps({"running": False, "units": [], "extras": empty}))
+        return
+    r1 = usc(pw, "list-units", "--all", "--no-pager", "--plain", "--output=json", f"--type={TYPES}")
+    r2 = usc(pw, "list-unit-files", "--no-pager", "--output=json", f"--type={TYPES}")
+    need(r1.returncode == 0 or r2.returncode == 0,
+         "could not talk to the account's service manager: " + (r1.stderr or r2.stderr).strip()[:200])
+    units = {}
+    for u in js(r1):
+        name = u.get("unit") or ""
+        if not name or u.get("load") == "not-found" or "@." in name:
+            continue
+        units[name] = {"name": name, "description": u.get("description") or "",
+                       "active": u.get("active") or "", "sub": u.get("sub") or "", "file_state": ""}
+    for f in js(r2):
+        name = (f.get("unit_file") or "").rsplit("/", 1)[-1]
+        if not name or "@." in name:
+            continue
+        x = units.setdefault(name, {"name": name, "description": "", "active": "inactive",
+                                    "sub": "dead", "file_state": ""})
+        x["file_state"] = f.get("state") or ""
+    out = sorted(units.values(), key=lambda u: u["name"])
+    for u in out:
+        u["type"] = u["name"].rsplit(".", 1)[-1]
+    extras = dict(empty)
+    if req.get("extras"):
+        timers, sockets = {}, {}
+        for t in js(usc(pw, "list-timers", "--all", "--no-pager", "--output=json")):
+            timers[t.get("unit") or ""] = {"next": us(t.get("next")), "last": us(t.get("last")),
+                                           "activates": t.get("activates") or ""}
+        for s in js(usc(pw, "list-sockets", "--all", "--no-pager", "--output=json")):
+            e = sockets.setdefault(s.get("unit") or "", {"listen": [], "activates": s.get("activates") or ""})
+            if s.get("listen"):
+                e["listen"].append(s["listen"])
+        extras = {"timers": timers, "sockets": sockets}
+    print(json.dumps({"running": True, "units": out, "extras": extras}))
+
+
+def cmd_detail():
+    req = read_req()
+    pw = get_user(req)
+    name = check_unit(req.get("name"))
+    need(running(pw), "this account's service manager isn't running")
+    props = {}
+    for line in usc(pw, "show", f"--property={PROPS}", name).stdout.splitlines():
+        k, sep, v = line.partition("=")
+        if sep:
+            props[k] = v
+    need(props and props.get("LoadState") != "not-found", "no such unit")
+    out = {}
+    for k, v in props.items():
+        if k in LISTS:
+            out[k] = v.split()[:100]
+        elif v in UNSET:
+            out[k] = None
+        else:
+            out[k] = v
+    st = usc(pw, "status", "--no-pager", "--full", "-n", "0", name)
+    acts, why = policy(name)
+    print(json.dumps({"name": name, "props": out, "status": (st.stdout or st.stderr)[:8000],
+                      "actions": acts, "reason": why}))
+
+
+def cmd_logs():
+    req = read_req()
+    pw = get_user(req)
+    name = check_unit(req.get("name"))
+    lines = req.get("lines", 200)
+    n = max(10, min(lines if isinstance(lines, int) and not isinstance(lines, bool) else 200, 1000))
+    uid = str(pw.pw_uid)
+    r = run([JOURNALCTL, "--no-pager", "-o", "short-iso", "-n", str(n),
+             f"_UID={uid}", f"_SYSTEMD_USER_UNIT={name}", "+", f"_UID={uid}", f"USER_UNIT={name}"], timeout=25)
+    text = r.stdout if r.returncode == 0 else (r.stderr or "No logs available")
+    print(json.dumps({"text": text[-200000:]}))
+
+
+def cmd_act():
+    req = read_req()
+    pw = get_user(req)
+    name = check_unit(req.get("name"))
+    action = req.get("action")
+    need(action in ACTIONS, "unknown action")
+    acts, why = policy(name)
+    need(action in acts, why or "that action isn't allowed for this unit")
+    need(running(pw), "this account's service manager isn't running")
+    load = usc(pw, "show", "-p", "LoadState", "--value", name).stdout.strip()
+    need(load not in ("", "not-found"), "no such unit")
+    log(f"{pw.pw_name}: {action} {name}")
+    r = usc(pw, action, name, timeout=90)
+    out = (r.stderr or r.stdout).strip()
+    need(r.returncode == 0, out or f"systemctl {action} failed")
+    print(out or "done")
+
+
+def cmd_manager():
+    req = read_req()
+    pw = get_user(req)
+    op = req.get("op")
+    need(op in ("start", "linger-on", "linger-off"), "unknown operation")
+    log(f"{pw.pw_name}: manager {op}")
+    if op == "start":
+        r = run([SYSTEMCTL, "start", f"user@{pw.pw_uid}.service"], timeout=60)
+    elif op == "linger-on":
+        r = run([LOGINCTL, "enable-linger", pw.pw_name])
+    else:
+        r = run([LOGINCTL, "disable-linger", pw.pw_name])
+    need(r.returncode == 0, (r.stderr or r.stdout).strip()[:300] or "the command failed")
+    print("done")
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) == 2 else ""
+    table = {"users": cmd_users, "list": cmd_list, "detail": cmd_detail,
+             "logs": cmd_logs, "act": cmd_act, "manager": cmd_manager}
+    if cmd not in table:
+        print("usage: " + " | ".join(table), file=sys.stderr)
+        sys.exit(2)
+    try:
+        table[cmd]()
+    except Bad as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
+
+
+main()

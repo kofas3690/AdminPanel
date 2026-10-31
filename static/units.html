@@ -4,7 +4,12 @@
 <title>Services</title>
 <link rel="stylesheet" href="/app.css">
 <script src="/shell.js" defer></script>
-<p><a href="/">&larr; Back</a></p>
+<style>
+  .acctbar { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin: 0 0 14px; padding: 10px 14px;
+             background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  .acctbar select { min-width: 150px; margin-left: 6px; }
+  .acctbar button { margin: 0; }
+</style>
 
 <div id="listview">
   <div class="top">
@@ -15,11 +20,20 @@
       <button data-t="timer">Timers</button>
       <button data-t="path">Paths</button>
     </div>
-    <div class="seg side">
-      <button class="on">System</button>
-      <button disabled title="User units belong to each person's own login session and aren't available yet">User</button>
+    <div class="seg side" id="scopes">
+      <button data-s="system" class="on">System</button>
+      <button data-s="user">User</button>
     </div>
   </div>
+
+  <div class="acctbar" id="acctbar" hidden>
+    <label>Account <select id="acct"></select></label>
+    <span id="acctstate" class="muted"></span>
+    <button id="startmgr" hidden>Start service manager</button>
+    <label id="lingerbox" hidden title="Lets this account's services start at boot and keep running when nobody is logged in">
+      <input type="checkbox" id="linger"> Keep running after logout</label>
+  </div>
+
   <div class="filters">
     <input id="q" type="text" placeholder="Filter by name or description" autocomplete="off">
     <select id="fa">
@@ -47,6 +61,7 @@
 <div id="detailview" hidden>
   <p><a id="back" href="#">&larr; All services</a></p>
   <h1 id="dtitle"></h1>
+  <p id="dscope" class="muted"></p>
   <p id="ddesc" class="muted"></p>
   <p>State: <strong id="dstate"></strong> &nbsp; File: <span id="dfile"></span></p>
   <p id="dactions"></p>
@@ -74,6 +89,7 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const TYPE_RE = /\.(service|socket|timer|path|target)$/;
+const JSON_H = { "Content-Type": "application/json" };
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -88,7 +104,83 @@ const qs = (o) => new URLSearchParams(o).toString();
 
 let all = [], extras = { timers: {}, sockets: {} };
 let tab = "service", view = "list", current = "", busy = false;
+let scope = "system", acct = "", USERS = [];
+try { if (sessionStorage.getItem("unitsScope") === "user") scope = "user"; } catch (e) {}
 
+/* ---------------- system or user scope ---------------- */
+const base = () => (scope === "user" ? "/api/uunits" : "/api/units");
+const withAcct = (o) => (scope === "user" ? { account: acct, ...o } : o);
+const unitHash = (name) => "#" + qs(scope === "user" ? { unit: name, user: acct } : { unit: name });
+
+function setScopeUI() {
+  document.querySelectorAll("#scopes button").forEach((b) => b.classList.toggle("on", b.dataset.s === scope));
+  $("acctbar").hidden = scope !== "user";
+  try { sessionStorage.setItem("unitsScope", scope); } catch (e) {}
+}
+
+function paintAcct() {
+  const u = USERS.find((x) => x.name === acct);
+  const st = $("acctstate");
+  if (!u) {
+    st.textContent = USERS.length ? "" : "There are no regular user accounts on this server.";
+    $("startmgr").hidden = true; $("lingerbox").hidden = true;
+    return;
+  }
+  st.textContent = u.running ? "Service manager running"
+    : "The service manager isn't running because this account isn't logged in, so its services can't be listed yet.";
+  $("startmgr").hidden = u.running;
+  $("lingerbox").hidden = false;
+  $("linger").checked = u.linger;
+}
+
+async function loadUsers() {
+  const r = await api("/api/uunits/users");
+  if (!r.ok) { $("acctstate").textContent = await errText(r); return; }
+  USERS = await r.json();
+  const sel = $("acct");
+  sel.replaceChildren();
+  for (const u of USERS) {
+    const o = document.createElement("option");
+    o.value = u.name; o.textContent = u.name + (u.running ? "" : "  (not running)");
+    sel.appendChild(o);
+  }
+  if (!acct || !USERS.some((u) => u.name === acct)) {
+    let want = "";
+    try { want = localStorage.getItem("unitsUser") || ""; } catch (e) {}
+    acct = USERS.some((u) => u.name === want) ? want : ((USERS.find((u) => u.running) || USERS[0] || {}).name || "");
+  }
+  sel.value = acct;
+  paintAcct();
+}
+
+async function setScope(s) {
+  scope = s; all = []; setScopeUI();
+  if (s === "user") await loadUsers();
+  loadList();
+}
+document.querySelectorAll("#scopes button").forEach((b) => { b.onclick = () => setScope(b.dataset.s); });
+
+$("acct").onchange = () => {
+  acct = $("acct").value;
+  try { localStorage.setItem("unitsUser", acct); } catch (e) {}
+  paintAcct(); all = []; loadList();
+};
+async function managerOp(op) {
+  const r = await api("/api/uunits/manager", { method: "POST", headers: JSON_H, body: JSON.stringify({ account: acct, op }) });
+  if (!r.ok) alert(await errText(r));
+  await loadUsers();
+  loadList();
+  return r.ok;
+}
+$("startmgr").onclick = () => {
+  if (confirm(`Start the service manager for ${acct}? Its enabled user services will start.`)) managerOp("start");
+};
+$("linger").onchange = async () => {
+  const want = $("linger").checked;
+  if (!(await managerOp(want ? "linger-on" : "linger-off"))) $("linger").checked = !want;
+};
+
+/* ---------------- shared helpers ---------------- */
 const COLS = {
   service: ["Name", "Description", "State", "File state"],
   target: ["Name", "Description", "State", "File state"],
@@ -164,7 +256,7 @@ function renderList() {
     const tr = document.createElement("tr");
     const nameTd = document.createElement("td");
     const a = document.createElement("a");
-    a.href = "#unit=" + encodeURIComponent(u.name);
+    a.href = unitHash(u.name);
     a.textContent = u.name.replace(TYPE_RE, "");
     nameTd.appendChild(a);
     tr.appendChild(nameTd);
@@ -186,7 +278,21 @@ function renderList() {
 }
 
 async function loadList() {
+  const mine = scope + "|" + acct;
+  if (scope === "user") {
+    if (!acct) { all = []; renderList(); $("count").textContent = ""; return; }
+    const r = await api("/api/uunits/list?" + qs({ account: acct, extras: tab === "socket" || tab === "timer" ? "true" : "false" }));
+    if (mine !== scope + "|" + acct) return;
+    if (!r.ok) { $("count").textContent = "Error: " + await errText(r); return; }
+    const d = await r.json();
+    all = d.units;
+    if (d.extras) extras = d.extras;
+    renderList();
+    if (!d.running) $("count").textContent = "The service manager isn't running";
+    return;
+  }
   const r = await api("/api/units");
+  if (mine !== scope + "|" + acct) return;
   if (!r.ok) { $("count").textContent = "Error: " + await errText(r); return; }
   all = await r.json();
   if (tab === "socket" || tab === "timer") {
@@ -231,7 +337,7 @@ function linkList(names) {
     if (i) frag.append(", ");
     if (TYPE_RE.test(n)) {
       const a = document.createElement("a");
-      a.href = "#unit=" + encodeURIComponent(n);
+      a.href = unitHash(n);
       a.textContent = n;
       frag.appendChild(a);
     } else frag.append(n);
@@ -242,6 +348,7 @@ function linkList(names) {
 function renderDetail(d) {
   const p = d.props, type = current.split(".").pop(), file = p.UnitFileState || "";
   $("dtitle").textContent = current;
+  $("dscope").textContent = scope === "user" ? "User unit of the account " + acct : "System unit";
   $("ddesc").textContent = p.Description || "";
   const [st, cls] = stateLabel(p.ActiveState, type);
   const s = $("dstate");
@@ -307,14 +414,14 @@ function renderDetail(d) {
 }
 
 async function loadDetail() {
-  const r = await api("/api/units/detail?" + qs({ name: current }));
+  const r = await api(base() + "/detail?" + qs(withAcct({ name: current })));
   if (!r.ok) { $("derr").textContent = await errText(r); return; }
   $("derr").textContent = "";
   renderDetail(await r.json());
 }
 
 async function loadLogs() {
-  const r = await api("/api/units/logs?" + qs({ name: current, lines: $("lines").value }));
+  const r = await api(base() + "/logs?" + qs(withAcct({ name: current, lines: $("lines").value })));
   const box = $("logbox");
   if (!r.ok) { box.textContent = await errText(r); return; }
   const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
@@ -327,9 +434,9 @@ async function doAction(a) {
   busy = true;
   $("dmsg").textContent = "Working\u2026";
   try {
-    const r = await api("/api/units/action", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: current, action: a }),
+    const r = await api(base() + "/action", {
+      method: "POST", headers: JSON_H,
+      body: JSON.stringify(withAcct({ name: current, action: a })),
     });
     $("dmsg").textContent = r.ok ? "Done." : "Error: " + (await errText(r));
   } finally { busy = false; }
@@ -341,11 +448,12 @@ $("reload").onclick = loadLogs;
 $("lines").onchange = loadLogs;
 
 /* ---------------- routing and refresh ---------------- */
-function route() {
-  let name = "";
-  const m = location.hash.match(/^#unit=(.+)$/);
-  if (m) { try { name = decodeURIComponent(m[1]); } catch (e) {} }
+async function route() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  const name = p.get("unit") || "", u = p.get("user") || "";
   if (name && TYPE_RE.test(name)) {
+    scope = u ? "user" : "system";
+    if (u) acct = u;
     current = name; view = "detail";
     $("listview").hidden = true;
     $("detailview").hidden = false;
@@ -357,12 +465,15 @@ function route() {
     view = "list";
     $("listview").hidden = false;
     $("detailview").hidden = true;
+    setScopeUI();
+    if (scope === "user") await loadUsers();
     loadList();
   }
 }
 window.addEventListener("hashchange", route);
 
 setInterval(() => { if (!document.hidden && view === "list") loadList(); }, 5000);
+setInterval(() => { if (!document.hidden && view === "list" && scope === "user") loadUsers(); }, 15000);
 setInterval(() => {
   if (document.hidden || view !== "detail" || busy) return;
   loadDetail();
