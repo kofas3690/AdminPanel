@@ -172,7 +172,10 @@ git push origin feature/my-change
 
 ## 📄 License
 
-No license has been chosen yet, so all rights are reserved by the author until one is added.
+This project is licensed under the MIT License.
+See the [LICENSE](LICENSE) file for details.
+
+Copyright (c) 2026 Kofi Agyapong Agyemang
 
 ## 👨‍💻 Author
 
