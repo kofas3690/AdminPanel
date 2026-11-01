@@ -1,9 +1,12 @@
-users.json
-users.json
-audit.log
+
+*.bak
+*.bak3
+*.bak4
+.cache/
 .venv/
 __pycache__/
+audit.log
+dist/
 panel.db
 panel.db-journal
-dist/
-dist/
+users.json

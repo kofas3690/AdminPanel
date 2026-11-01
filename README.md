@@ -1,316 +1,179 @@
 # 🛡️ AdminPanel
 
-### A Linux System Administration Dashboard
+**A web control panel for Ubuntu and Debian servers.** Manage services, updates, firewall, users, storage, networking, logs, files and a terminal from one HTTPS page, protected by a password and two-step verification.
 
-AdminPanel is a Python-based Linux system administration application designed to provide a centralized interface for managing and monitoring Linux systems.
+![Dashboard](screenshots/dashboard.png)
 
-It brings essential system administration operations into one place, helping administrators manage users, services, networking, storage, security, firewall configurations, and system logs.
+> **Status:** version 0.9.1, active development. Install only on machines you control. The panel can change disks, networking and accounts.
 
-The project aims to simplify Linux server administration through an organized, modular, and user-friendly management interface.
+---
+
+## Contents
+
+- [Features](#-features)
+- [Quick start](#-quick-start)
+- [Documentation](#-documentation)
+- [How it stays safe](#-how-it-stays-safe)
+- [Screenshots](#-screenshots)
+- [Building from source](#-building-from-source)
+- [Project layout](#-project-layout)
+- [Roadmap](#-roadmap)
+- [Contributing](#-contributing)
 
 ---
 
 ## ✨ Features
 
-AdminPanel provides a collection of system administration modules.
-
-### 🔐 Authentication & Security
-
-* User authentication and access management.
-* Security management.
-* Two-factor authentication enrollment.
-* Administrative activity auditing.
-
-### 👥 User Management
-
-* Manage system users.
-* Create and manage user accounts.
-* User administration tools.
-
-### ⚙️ System Management
-
-* Monitor system information.
-* Manage system services.
-* View system logs and journals.
-* Manage system updates.
-* Manage systemd units.
-
-### 🌐 Network Management
-
-* Network information and management.
-* Firewall management through UFW.
-* Network administration utilities.
-
-### 💾 Storage Management
-
-* Monitor disk usage.
-* Manage storage resources.
-* Browse and manage files.
-* Filesystem administration.
-
-### 📋 System Monitoring
-
-* View system logs.
-* Inspect system journals.
-* Monitor system resources.
-* Audit administrative activities.
+| Area | What you can do |
+|---|---|
+| **Sign-in** | Password (argon2) + TOTP two-step verification, one-time recovery codes, persistent sessions with a session list, lockout after repeated failures |
+| **Dashboard** | CPU, memory, disk, load, uptime |
+| **Services** | System and per-user systemd units: start, stop, restart, enable, disable, with System / User switch |
+| **Logs** | Live log viewer, journal browser |
+| **Updates** | Check for APT updates and run update / upgrade jobs |
+| **Firewall** | UFW rules, status, routing rules |
+| **Users** | Create, lock, unlock, delete Linux accounts and set passwords |
+| **Terminal** | Browser terminal (xterm.js) over SSH to this machine, password or **SSH key** |
+| **File manager** | Explorer-style SFTP browser: upload, download, edit, as a chosen non-root account, password or **SSH key** |
+| **Storage** | Disks and mounts, partitions, LVM, RAID (mdadm), LUKS encryption, iSCSI initiator and target, secure erase jobs |
+| **Network** | Live activity, IP configuration, bridges, VLANs, bonds, WireGuard VPN (including full tunnel, peer config generator), gateway/NAT, proxies, automatic rollback of risky changes |
+| **Audit trail** | Every administrative action is written to a JSON-lines audit log |
 
 ---
 
-## 🏗️ Architecture
+## 🚀 Quick start
 
-AdminPanel follows a modular architecture that separates application functionality into independent components.
-
-The application includes modules for:
-
-| Module          | Responsibility                       |
-| --------------- | ------------------------------------ |
-| `app`           | Main application                     |
-| `auth`          | Authentication                       |
-| `audit`         | Administrative auditing              |
-| `store`         | Application data storage             |
-| `system`        | System information and management    |
-| `services`      | Service management                   |
-| `logs`          | Log management                       |
-| `updates`       | System updates                       |
-| `firewall`      | Firewall administration              |
-| `users`         | User management                      |
-| `terminal`      | Terminal functionality               |
-| `storage`       | Storage management                   |
-| `storage_admin` | Storage administration               |
-| `files`         | File management                      |
-| `fs`            | Filesystem operations                |
-| `network`       | Network management                   |
-| `security`      | Security management                  |
-| `journal`       | System journal management            |
-| `units`         | Systemd unit management              |
-| `userunits`     | User systemd unit management         |
-| `create_user`   | User creation                        |
-| `enroll_2fa`    | Two-factor authentication enrollment |
-
----
-
-## 🛠️ Technology Stack
-
-AdminPanel uses the following technologies and system utilities:
-
-* **Python** – Core application development.
-* **Linux** – Target operating system.
-* **APT** – Package management integration.
-* **UFW** – Firewall management.
-* **systemd** – Service and unit management.
-* **Debian Packaging** – Application distribution.
-* **Git** – Version control.
-
-The project uses isolated Python execution for its packaged administrative helper scripts.
-
----
-
-## 📦 Installation
-
-### Option 1: Install Using the Debian Package
-
-Download the latest `.deb` package from the GitHub Releases section.
-
-For example:
+Requirements: Ubuntu or Debian (or a derivative) with systemd, Python 3.10 or newer, and internet access during install.
 
 ```bash
+# 1. Download the latest adminpanel_X.Y.Z_all.deb from the Releases page, then:
 sudo apt update
-sudo apt install ./adminpanel_0.9.0_all.deb
+sudo apt install ./adminpanel_0.9.1_all.deb
+
+# 2. First-run setup: certificate, web server, administrator account, two-step verification
+sudo adminpanel-setup
+
+# 3. Verify
+sudo adminpanel-selfcheck
 ```
 
-APT will handle the package installation and dependency resolution.
+Then open **`https://YOUR-SERVER-IP:8443`** and sign in. The certificate is self-signed, so the browser warns the first time.
 
-### Option 2: Clone the Repository
+On a VPS, the safer option is an SSH tunnel instead of opening port 8443:
 
-Clone the project:
+```bash
+ssh -L 8443:127.0.0.1:8443 YOURUSER@YOUR-SERVER-IP
+# then browse to https://localhost:8443
+```
+
+➡️ The complete walkthrough, with troubleshooting, is in **[docs/INSTALL.md](docs/INSTALL.md)**.
+
+---
+
+## 📚 Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/INSTALL.md](docs/INSTALL.md) | Full installation and setup guide: requirements, install, first run, VPS access, SSH keys, upgrade, backup, uninstall, troubleshooting |
+| [RELEASE_NOTES.md](RELEASE_NOTES.md) | What changed in each version, with upgrade notes |
+
+---
+
+## 🔒 How it stays safe
+
+- **The web application runs as an unprivileged `adminpanel` user**, listening on `127.0.0.1:8000` only. nginx terminates HTTPS in front of it, with a rate limit on login.
+- **Privileged actions go through small root helpers** (`/usr/local/sbin/adminpanel-*`) that sudo allows by exact command. Each helper re-validates its input; the panel account cannot run arbitrary commands as root (`adminpanel-selfcheck` tests this).
+- **Disk changes need extra proof:** password + authenticator code ("unlock", valid for 10 minutes), typed confirmations, and a preview of the exact commands. One rule protects the system disk from every destructive action.
+- **Network changes roll back automatically** unless you confirm them.
+- **Terminal and File manager** use a pinned SSH host key, refuse `root`, count failed attempts, and time out when idle. An SSH key you supply is used once, held in memory only, never stored or logged.
+- **Sessions** use HttpOnly, SameSite=Strict, Secure cookies, and are stored hashed.
+
+Recommendations: keep port 8443 closed to the public internet where possible (use the SSH tunnel or allow only your own IP), keep the system updated, and keep your recovery codes offline.
+
+---
+
+## 🖼️ Screenshots
+
+| | |
+|---|---|
+| ![Systemd units](screenshots/systemd-units.png) | ![Storage](screenshots/storage-overview.png) |
+| ![Network](screenshots/network-management.png) | ![File manager](screenshots/file-manager.png) |
+| ![Updates](screenshots/system-updates.png) | ![Terminal](screenshots/terminal.png) |
+
+---
+
+## 🔨 Building from source
 
 ```bash
 git clone https://github.com/kofas3690/AdminPanel.git
-```
-
-Navigate into the project:
-
-```bash
 cd AdminPanel
+bash packaging/build.sh        # produces dist/adminpanel_<version>_all.deb
 ```
 
-Install the required system dependencies and Python packages according to the project's installation configuration.
+The version comes from `packaging/VERSION`. The build checks that every module is listed, compiles and import-checks the Python code, validates the root helpers and sudoers rules, and refuses to build if anything is missing. When you add a Python module, add it to `MODULES` in `packaging/build.sh`.
 
-> Note: Source installation instructions and the application startup command will be documented as the installation workflow is finalized.
+`packaging/collect.sh` copies the working files and helpers from a deployed development machine into `packaging/`. `packaging/test-multipass.sh` installs the package in a clean Multipass VM.
+
+### Running from source (development)
+
+The package is the supported install. For development, see [docs/INSTALL.md](docs/INSTALL.md#developing-from-a-git-checkout).
 
 ---
 
-## 🔨 Building from Source
-
-AdminPanel includes packaging scripts for collecting application files and building a Debian package.
-
-### Step 1: Collect Application Files
-
-```bash
-bash packaging/collect.sh
-```
-
-This collects the required application files and administrative helper scripts.
-
-### Step 2: Build the Debian Package
-
-```bash
-bash packaging/build.sh
-```
-
-The build process performs validation checks, including:
-
-* Python module validation.
-* Python import checks.
-* Static asset validation.
-* Administrative helper script validation.
-* Sudoers configuration validation.
-* Dependency packaging.
-
-A successful build produces a Debian installation package.
-
----
-
-## 📁 Project Structure
-
-The project is organized into application modules, system administration helpers, and packaging resources.
+## 📁 Project layout
 
 ```text
 AdminPanel/
-│
-├── app/
-│   ├── auth/
-│   ├── audit/
-│   ├── system/
-│   ├── services/
-│   ├── logs/
-│   ├── updates/
-│   ├── firewall/
-│   ├── users/
-│   ├── storage/
-│   ├── network/
-│   ├── security/
-│   └── ...
-│
-├── system/
-│   ├── adminpanel-apt
-│   ├── adminpanel-ufw
-│   ├── adminpanel-users
-│   ├── adminpanel-net
-│   ├── adminpanel-disk
-│   └── adminpanel-userunits
-│
-├── packaging/
-│   ├── collect.sh
-│   ├── build.sh
-│   └── live/
-│
-└── README.md
+├── app.py                 FastAPI application, includes all routers
+├── auth.py, store.py      Sign-in, TOTP, sessions (SQLite)
+├── audit.py               Audit log
+├── system.py, units.py, userunits.py, services.py, logs.py, journal.py, updates.py
+├── firewall.py, users.py, security.py
+├── storage.py, storage_admin.py, files.py, fs.py
+├── network.py
+├── terminal.py, sshkeys.py
+├── create_user.py, enroll_2fa.py
+├── static/                HTML, CSS and JS (xterm.js bundled in static/vendor)
+├── system/                Reference copies of the root helpers
+├── packaging/             build.sh, collect.sh, debian/ scripts, files/, live/ helpers
+├── docs/INSTALL.md        Full setup guide
+├── RELEASE_NOTES.md
+└── screenshots/
 ```
 
-*The structure above is a simplified architectural overview.*
-
----
-
-## 🔒 Security
-
-AdminPanel interacts with sensitive Linux system resources and administrative operations.
-
-Security is an important consideration throughout the project.
-
-The project includes:
-
-* Authentication-related functionality.
-* Administrative activity auditing.
-* Dedicated system administration helpers.
-* Isolated Python execution for packaged Python helpers.
-* Sudoers configuration validation during packaging.
-
-**Security recommendations:**
-
-* Run administrative operations with appropriate privileges.
-* Do not expose administrative interfaces to untrusted networks.
-* Protect authentication credentials.
-* Review privileged permissions before deployment.
-* Keep the operating system and application updated.
-
----
-
-## 🚧 Development Status
-
-AdminPanel is actively being developed.
-
-The project is undergoing continuous improvements in functionality, security, packaging, and system integration.
-
-Features and implementation details may change between releases.
+Installed layout: application in `/opt/adminpanel`, root helpers in `/usr/local/sbin`, sudo rules in `/etc/sudoers.d`, nginx site `adminpanel.conf`, certificate `/etc/ssl/certs/adminpanel.crt`, state in `/var/lib/adminpanel`, service `adminpanel.service`.
 
 ---
 
 ## 🗺️ Roadmap
 
-Planned areas of improvement include:
-
-* [ ] Improve system monitoring.
-* [ ] Expand security management capabilities.
-* [ ] Improve network administration.
-* [ ] Expand user management functionality.
-* [ ] Improve application logging and auditing.
-* [ ] Enhance Debian package distribution.
-* [ ] Automate testing and releases using GitHub Actions.
-* [ ] Improve documentation.
+- [ ] Backup and restore of panel settings
+- [ ] Real domain and Let's Encrypt certificate option in `adminpanel-setup`
+- [ ] Root-owned application code (hardening)
+- [ ] Offline package with bundled Python wheels
+- [ ] Automated tests and release builds with GitHub Actions
+- [ ] License
 
 ---
 
 ## 🤝 Contributing
 
-Contributions, suggestions, bug reports, and feature requests are welcome.
-
-To contribute:
-
-1. Fork the repository.
-2. Create a new branch.
+Issues and pull requests are welcome.
 
 ```bash
-git checkout -b feature/new-feature
+git checkout -b feature/my-change
+# make changes, then
+bash packaging/build.sh        # must pass
+git commit -am "Describe the change"
+git push origin feature/my-change
 ```
-
-3. Make your changes.
-4. Commit your changes.
-
-```bash
-git add .
-git commit -m "Add new feature"
-```
-
-5. Push your branch.
-
-```bash
-git push origin feature/new-feature
-```
-
-6. Open a Pull Request.
 
 ---
 
 ## 📄 License
 
-License information will be added when the project's license is finalized.
-
----
+No license has been chosen yet, so all rights are reserved by the author until one is added.
 
 ## 👨‍💻 Author
 
-**Kofi Agyapong Agyemang**
-
-GitHub: [@kofas3690](https://github.com/kofas3690)
-
----
-
-## ⭐ Support
-
-If you find AdminPanel useful, consider giving the project a star on GitHub.
-
-Your support and feedback help improve the project.
-
-**AdminPanel – Simplifying Linux System Administration.**
+**Kofi Agyapong Agyemang**: [@kofas3690](https://github.com/kofas3690)
