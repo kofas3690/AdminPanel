@@ -4,7 +4,18 @@ Install guide: [docs/INSTALL.md](docs/INSTALL.md). Upgrading from any earlier ve
 
 ---
 
-## Unreleased
+## v0.9.2: security and setup fixes (2026-11-01)
+
+**Install**
+
+```bash
+sudo apt update
+sudo apt install ./adminpanel_0.9.2_all.deb
+sudo adminpanel-setup          # first install only
+sudo adminpanel-selfcheck
+```
+
+Upgrading from 0.9.0 or 0.9.1: the same `apt install` line, then `sudo adminpanel-selfcheck`. Your accounts, certificate, port and settings are kept. Then open `https://SERVER-IP:8443` (or tunnel with `ssh -L 8443:127.0.0.1:8443 USER@SERVER-IP` and use `https://localhost:8443`). Full guide: [docs/INSTALL.md](docs/INSTALL.md).
 
 ### Security
 - **The Terminal now refuses `root`** (and any account with UID 0), like the File manager. Opening terminals is limited to 10 per panel user per 5 minutes, which slows password guessing.
@@ -18,6 +29,9 @@ Install guide: [docs/INSTALL.md](docs/INSTALL.md). Upgrading from any earlier ve
 - `adminpanel-setup` uses private temporary files.
 - The package build now fails if the network-manager guard cannot be added.
 - `deploy.sh` no longer copies docs, packaging files or machine-specific files into `/opt/adminpanel`.
+
+### Known issues
+- The Systemd units page can list units, but starting and stopping them needs a root helper that is not yet packaged. Use the Services page or the command line for now.
 
 ---
 
