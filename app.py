@@ -17,10 +17,9 @@ from firewall import router as firewall_router
 from users import router as users_router
 from terminal import router as terminal_router
 from storage import router as storage_router
-from files import router as files_router
 from network import router as network_router
 
-app = FastAPI()
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 class NoCacheStatic(StaticFiles):
     """Always revalidate pages, so a deploy shows up straight away."""
@@ -46,7 +45,6 @@ app.include_router(firewall_router)
 app.include_router(users_router)
 app.include_router(terminal_router)
 app.include_router(storage_router)
-app.include_router(files_router)
 app.include_router(network_router)
 
 

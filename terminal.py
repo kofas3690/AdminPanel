@@ -1,4 +1,4 @@
-import asyncio, fcntl, json, os, pty, re, struct, termios, time
+import asyncio, fcntl, json, os, pty, pwd, re, struct, termios, time
 from pathlib import Path
 from fastapi import APIRouter, WebSocket
 from audit import audit
@@ -16,8 +16,28 @@ NAME = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 MAX_TOTAL, MAX_PER_USER = 3, 2
 IDLE_LIMIT = 15 * 60
 KEY_WAIT = 30
+OPEN_LIMIT, OPEN_WINDOW = 10, 300   # at most 10 terminals per panel user per 5 minutes
+recent_opens = {}                  # panel user -> times of recent opens
 
 active = {}   # panel user -> number of open terminals
+
+
+def is_root(name):
+    try:
+        return name == "root" or pwd.getpwnam(name).pw_uid == 0
+    except KeyError:
+        return False
+
+
+def too_many_opens(user):
+    now = time.time()
+    times = [t for t in recent_opens.get(user, []) if now - t < OPEN_WINDOW]
+    if len(times) >= OPEN_LIMIT:
+        recent_opens[user] = times
+        return True
+    times.append(now)
+    recent_opens[user] = times
+    return False
 
 
 def clamp(n):
@@ -89,6 +109,12 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24, a
     if (user is None or not origin_ok(ws) or not NAME.fullmatch(u)
             or auth not in ("password", "key") or not KNOWN_HOSTS.exists()):
         await ws.close(code=1008)
+        return
+    if is_root(u):
+        await ws.close(code=1008)
+        return
+    if too_many_opens(user):
+        await ws.close(code=1013)
         return
     if sum(active.values()) >= MAX_TOTAL or active.get(user, 0) >= MAX_PER_USER:
         await ws.close(code=1013)

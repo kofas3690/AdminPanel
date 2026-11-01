@@ -4,6 +4,22 @@ Install guide: [docs/INSTALL.md](docs/INSTALL.md). Upgrading from any earlier ve
 
 ---
 
+## Unreleased
+
+### Security
+- **The Terminal now refuses `root`** (and any account with UID 0), like the File manager. Opening terminals is limited to 10 per panel user per 5 minutes, which slows password guessing.
+- The interactive API docs (`/docs`, `/redoc`, `/openapi.json`) are switched off.
+- The audit log is also written to the system journal (`journalctl -t adminpanel-audit`), which the panel account cannot edit, and is rotated weekly (`/etc/logrotate.d/adminpanel`).
+- A one-time 2FA code can no longer be used twice by two simultaneous sign-ins.
+
+### Changed
+- Removed the unused legacy `/api/files` module, which exposed `/var/log` read-only and pointed at a folder nothing creates.
+- `adminpanel-setup` uses private temporary files.
+- The package build now fails if the network-manager guard cannot be added.
+- `deploy.sh` no longer copies docs, packaging files or machine-specific files into `/opt/adminpanel`.
+
+---
+
 ## v0.9.1: SSH key sign-in
 
 **Install**

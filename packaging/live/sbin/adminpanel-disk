@@ -556,7 +556,7 @@ def op_lv_extend(inv, a):
 @op("lv-remove", destructive=True)
 def op_lv_remove(inv, a):
     lv = lv_of(inv, a.get("lv"))
-    n = get_dev(inv, lv["dm_path"], "wipe")
+    get_dev(inv, lv["dm_path"], "wipe")
     return [S("lvremove", "-y", f"{lv['vg']}/{lv['name']}")] + settle(), [f"{lv['vg']}/{lv['name']} and all its data will be destroyed."]
 
 
@@ -2565,7 +2565,7 @@ def cmd_op(mode):
         syslog.syslog(syslog.LOG_NOTICE, "apply " + name + " " + json.dumps(redact(args))[:400])
         try:
             log = execute(steps)
-        except Bad as e:
+        except Bad:
             syslog.syslog(syslog.LOG_WARNING, f"{name} failed")
             raise
         syslog.syslog(syslog.LOG_NOTICE, f"{name} finished")

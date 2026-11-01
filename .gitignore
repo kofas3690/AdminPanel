@@ -8,5 +8,6 @@ __pycache__/
 audit.log
 dist/
 panel.db
+ssh_known_hosts
 panel.db-journal
 users.json

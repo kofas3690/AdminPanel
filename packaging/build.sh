@@ -17,7 +17,7 @@ say() { echo "==> $*"; }
 [[ "$VERSION" =~ ^[0-9][A-Za-z0-9.+~-]*$ ]] || die "invalid version: $VERSION"
 command -v dpkg-deb >/dev/null || die "dpkg-deb is required. Build this on Ubuntu or Debian."
 
-MODULES=(app auth audit store system services logs updates firewall users terminal storage storage_admin files fs network security journal units userunits create_user enroll_2fa sshkeys)
+MODULES=(app auth audit store system services logs updates firewall users terminal storage storage_admin fs network security journal units userunits create_user enroll_2fa sshkeys)
 HELPERS=(apt ufw users net disk userunits)
 
 say "Checking the source files"
@@ -96,7 +96,7 @@ if 'is-active", "systemd-networkd"' in s:
 elif s.count(anchor) == 1:
     p.write_text(s.replace(anchor, guard)); print("added the networkd guard")
 else:
-    print("WARNING: could not add the networkd guard (the helper differs from what I expected)")
+    sys.exit("ERROR: could not add the networkd guard (the adminpanel-net helper differs from what the build expects)")
 PY
 
 install -m 755 "$FILES/usr/sbin/adminpanel-setup" "$PKG/usr/sbin/adminpanel-setup"
@@ -108,6 +108,7 @@ else echo "NOTE: no packaging/live/requirements.lock. The newest compatible pack
 find "$PKG/usr/share/adminpanel" -type d -exec chmod 755 {} +
 find "$PKG/usr/share/adminpanel" -type f -exec chmod 644 {} +
 install -m 644 "$FILES/usr/share/doc/adminpanel/README.md" "$PKG/usr/share/doc/adminpanel/README.md"
+install -D -m 644 "$FILES/etc/logrotate.d/adminpanel" "$PKG/etc/logrotate.d/adminpanel"
 
 say "Checking that no secrets or build leftovers are inside"
 leak=$(find "$PKG" \( -name users.json -o -name panel.db -o -name 'panel.db-*' -o -name audit.log -o -name ssh_known_hosts \
@@ -134,6 +135,7 @@ Description: Web administration panel for Ubuntu and Debian servers
  manager and a terminal. Privileged actions run through small root helpers
  with strict validation. After installing, run: sudo adminpanel-setup
 CTRL
+echo /etc/logrotate.d/adminpanel > "$PKG/DEBIAN/conffiles"
 for s in postinst prerm postrm; do install -m 755 "$HERE/debian/$s" "$PKG/DEBIAN/$s"; done
 
 say "Building"

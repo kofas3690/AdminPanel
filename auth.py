@@ -12,6 +12,7 @@ router = APIRouter(prefix="/api")
 ph = PasswordHasher()
 USERS_FILE = Path(__file__).parent / "users.json"
 users_lock = threading.Lock()
+totp_lock = threading.Lock()
 
 SESSION_TTL = 8 * 3600        # sessions last 8 hours
 MAX_FAILS, WINDOW = 5, 300    # 5 failures per 5 minutes, then locked
@@ -68,13 +69,14 @@ def check_totp(username, secret, code):
         return False
     totp = pyotp.TOTP(secret)
     now = int(time.time())
-    for offset in (-1, 0, 1):
-        counter = now // 30 + offset
-        if hmac.compare_digest(totp.at(now, offset), code):
-            if counter <= last_counter.get(username, -1):
-                return False          # this code was already used
-            last_counter[username] = counter
-            return True
+    with totp_lock:
+        for offset in (-1, 0, 1):
+            counter = now // 30 + offset
+            if hmac.compare_digest(totp.at(now, offset), code):
+                if counter <= last_counter.get(username, -1):
+                    return False          # this code was already used
+                last_counter[username] = counter
+                return True
     return False
 
 

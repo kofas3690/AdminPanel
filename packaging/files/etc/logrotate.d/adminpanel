@@ -1,0 +1,10 @@
+/opt/adminpanel/audit.log {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0600 adminpanel adminpanel
+}

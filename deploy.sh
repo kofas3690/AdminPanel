@@ -12,6 +12,8 @@ OUT=$(sudo rsync -ai \
   --exclude .venv --exclude __pycache__ --exclude '*.pyc' \
   --exclude users.json --exclude audit.log \
   --exclude .git --exclude .gitignore --exclude deploy.sh --exclude system \
+  --exclude packaging --exclude docs --exclude screenshots --exclude '*.bak*' \
+  --exclude '*.md' --exclude LICENSE --exclude ssh_known_hosts --exclude panel.db --exclude 'panel.db-*' \
   "$SRC" "$DST")
 sudo chown -R adminpanel:adminpanel "$DST"
 

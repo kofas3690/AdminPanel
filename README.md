@@ -129,7 +129,7 @@ AdminPanel/
 ├── audit.py               Audit log
 ├── system.py, units.py, userunits.py, services.py, logs.py, journal.py, updates.py
 ├── firewall.py, users.py, security.py
-├── storage.py, storage_admin.py, files.py, fs.py
+├── storage.py, storage_admin.py, fs.py
 ├── network.py
 ├── terminal.py, sshkeys.py
 ├── create_user.py, enroll_2fa.py

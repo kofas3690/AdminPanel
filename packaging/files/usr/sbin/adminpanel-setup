@@ -59,10 +59,12 @@ Match Address 127.0.0.1,::1
 Match all
 EOF
     chmod 644 "$f"
-    if ! $sshd -t 2>/tmp/adminpanel-sshd-check.log; then
-        rm -f "$f"; cat /tmp/adminpanel-sshd-check.log >&2
+    chk=$(mktemp)
+    if ! $sshd -t 2>"$chk"; then
+        rm -f "$f"; cat "$chk" >&2; rm -f "$chk"
         die "the SSH server rejected the change, so it was removed"
     fi
+    rm -f "$chk"
     systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
     eff=$($sshd -T -C user=root,host=localhost,addr=127.0.0.1,laddr=127.0.0.1,lport=22 2>/dev/null | awk '$1=="passwordauthentication"{print $2}')
     remote=$($sshd -T -C user=root,host=example,addr=192.0.2.10,laddr=192.0.2.1,lport=22 2>/dev/null | awk '$1=="passwordauthentication"{print $2}')
@@ -122,10 +124,12 @@ step_tls() {
     install -m 644 "$SHARE/nginx/adminpanel-disks.conf" "$SNIP/adminpanel-disks.conf"
     sed -e "s|@PORT@|$port|g" -e "s|^@LISTEN6@\$|$listen6|" "$SHARE/nginx/site.conf.tmpl" > "$SITE_AV"
     ln -sf "$SITE_AV" "$SITE_EN"
-    if ! nginx -t >/tmp/adminpanel-nginx-check.log 2>&1; then
-        rm -f "$SITE_EN"; cat /tmp/adminpanel-nginx-check.log >&2
+    chk=$(mktemp)
+    if ! nginx -t >"$chk" 2>&1; then
+        rm -f "$SITE_EN"; cat "$chk" >&2; rm -f "$chk"
         die "the web server rejected the configuration (shown above). The panel site was not enabled."
     fi
+    rm -f "$chk"
     systemctl enable nginx >/dev/null 2>&1 || true
     systemctl reload nginx 2>/dev/null || systemctl restart nginx
     echo "$port" > "$STATE/port"
