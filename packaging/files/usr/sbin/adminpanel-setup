@@ -153,7 +153,7 @@ step_user() {
         read -r -p "An administrator already exists. Create another, or reset a password? [y/N] " a || a=n
         case "$a" in y|Y) ;; *) return 0 ;; esac
     fi
-    say "Create the panel administrator (the password needs at least 12 characters)"
+    say "Create the panel administrator (the password needs at least 8 characters)"
     ( cd "$APP" && runuser -u adminpanel -- "$PY" create_user.py )
     CREATED=1
 }

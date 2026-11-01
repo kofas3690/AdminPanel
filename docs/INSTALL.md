@@ -65,7 +65,7 @@ It runs these steps in order and is safe to re-run:
 | **ssh** | Pins this machine's SSH host key so the Terminal and File manager can trust it |
 | **ssh-local** | Allows **password** sign-in over SSH from this machine only (needed on cloud images that disable passwords). Skipped when already allowed |
 | **tls** | Creates a self-signed certificate (valid for this machine's addresses) and the nginx site on port **8443** |
-| **user** | Creates the panel administrator. The password needs **at least 12 characters** |
+| **user** | Creates the panel administrator. The password needs **at least 8 characters** (longer is safer). Setup tells you the rule and asks again if it is too short |
 | **2fa** | Shows a QR code. Scan it with an authenticator app, then type the 6-digit code. It also prints **recovery codes**: store them offline |
 
 You can run a single step:

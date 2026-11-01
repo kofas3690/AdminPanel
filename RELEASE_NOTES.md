@@ -13,6 +13,7 @@ Install guide: [docs/INSTALL.md](docs/INSTALL.md). Upgrading from any earlier ve
 - A one-time 2FA code can no longer be used twice by two simultaneous sign-ins.
 
 ### Changed
+- The panel administrator password needs at least 8 characters (was 12). Setup states the rule before asking, and asks again (up to 3 tries) instead of stopping.
 - Removed the unused legacy `/api/files` module, which exposed `/var/log` read-only and pointed at a folder nothing creates.
 - `adminpanel-setup` uses private temporary files.
 - The package build now fails if the network-manager guard cannot be added.
