@@ -45,7 +45,7 @@ if problems:
     sys.exit("\n".join(sorted(set(problems))))
 print("Python modules OK")
 PY
-for f in login.html index.html app.css shell.js vendor/xterm.js vendor/xterm.css vendor/addon-fit.js; do
+for f in login.html index.html app.css theme.js shell.js vendor/xterm.js vendor/xterm.css vendor/addon-fit.js; do
     [ -f "$ROOT/static/$f" ] || die "missing static/$f"
 done
 for h in "${HELPERS[@]}"; do

@@ -3,6 +3,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VPN</title>
 <link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
 <script src="/shell.js" defer></script>
 <style>
   .peer { border: 1px solid var(--line); border-radius: 8px; padding: 6px 14px 10px; margin: 12px 0; background: var(--bg); }
@@ -10,14 +11,14 @@
   .vcard { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin: 12px 0; }
   .vcard table { margin: 8px 0 0; }
   #form { max-width: 760px; }
-  code { background: #121417; padding: 2px 6px; border-radius: 4px; font-size: 12px; word-break: break-all; }
+  code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; word-break: break-all; }
   dialog input[type=text], dialog input[type=password], dialog textarea, dialog select { width: 100%; }
   dialog label { display: block; margin: 10px 0; }
   dialog textarea { height: 200px; font: 13px var(--mono); }
   #pNetworks { height: 70px; }
   #pqr { background: #fff; max-width: 100%; image-rendering: pixelated; display: block; margin: 8px 0; }
   #pconf { max-height: 220px; }
-  .tag { display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: 12px; background: #3a3f46; margin-right: 4px; }
+  .tag { display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: 12px; background: var(--pill-off-bg); margin-right: 4px; }
 </style>
 
 <h1>VPN</h1>

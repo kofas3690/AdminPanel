@@ -3,6 +3,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Overview</title>
 <link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
 <script src="/shell.js" defer></script>
 
 <h1>Overview</h1>
@@ -110,13 +111,13 @@ async function tick() {
   push(H.cpu, d.cpu_percent);
   $("cpu").textContent = d.cpu_percent.toFixed(0) + "%";
   setBar("cpubar", d.cpu_percent);
-  spark($("cpuspark"), [H.cpu], ["#73bcf7"], 100);
+  spark($("cpuspark"), [H.cpu], [AdminTheme.css("--accent")], 100);
   $("cpuinfo").textContent = d.cpu_cores + " cores \u00b7 load " + d.load.map((x) => x.toFixed(2)).join(", ");
 
   push(H.mem, d.mem.percent);
   $("mem").textContent = d.mem.percent.toFixed(0) + "%";
   setBar("membar", d.mem.percent);
-  spark($("memspark"), [H.mem], ["#73bcf7"], 100);
+  spark($("memspark"), [H.mem], [AdminTheme.css("--accent")], 100);
   $("meminfo").textContent = fmtBytes(d.mem.used) + " of " + fmtBytes(d.mem.total) +
     (d.swap.total ? " \u00b7 swap " + fmtBytes(d.swap.used) : "");
 
@@ -133,7 +134,7 @@ async function tick() {
   }
   prev = { rx: d.net.rx, tx: d.net.tx, time: d.time };
   $("net").textContent = "\u2193 " + fmtBytes(rrx) + "/s";
-  spark($("netspark"), [H.rx, H.tx], ["#7fd47a", "#73bcf7"]);
+  spark($("netspark"), [H.rx, H.tx], [AdminTheme.css("--ok"), AdminTheme.css("--accent")]);
   $("netinfo").textContent = "\u2191 " + fmtBytes(rtx) + "/s \u00b7 total \u2193 " + fmtBytes(d.net.rx) + " \u2191 " + fmtBytes(d.net.tx);
 
   const rows = [

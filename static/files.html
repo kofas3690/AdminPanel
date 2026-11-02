@@ -3,6 +3,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>File manager</title>
 <link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
 <script src="/shell.js" defer></script>
 <script src="/sshkey-ui.js" defer></script>
 <script src="/files-key.js" defer></script>
@@ -15,7 +16,7 @@
   .navrow { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
   .navrow button { margin: 0; padding: 6px 11px; }
   .addrbar { flex: 1; display: flex; align-items: center; gap: 1px; min-height: 36px; padding: 3px 8px; overflow: hidden;
-             background: var(--input); border: 1px solid #4a5058; border-radius: 4px; cursor: text; }
+             background: var(--input); border: 1px solid var(--line2); border-radius: 4px; cursor: text; }
   .addrbar a.crumb { padding: 3px 7px; border-radius: 4px; color: var(--text); white-space: nowrap; cursor: pointer; }
   .addrbar a.crumb:hover { background: var(--panel2); text-decoration: none; }
   .addrbar .sep { color: var(--muted); }
@@ -33,26 +34,26 @@
   .node { user-select: none; }
   .node .row { display: flex; align-items: center; gap: 4px; padding: 3px 6px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
   .node .row:hover { background: var(--panel2); }
-  .node .row.on { background: #33506b; }
+  .node .row.on { background: var(--sel); }
   .node .tg { width: 16px; text-align: center; color: var(--muted); }
   .kids { margin-left: 16px; }
   #list { margin: 0; border: 0; border-radius: 0; background: none; }
   #list th { position: sticky; top: 0; background: var(--panel2); cursor: pointer; user-select: none; z-index: 1; white-space: nowrap; }
-  #list td { padding: 6px 12px; border-bottom: 1px solid #2c3036; white-space: nowrap; }
+  #list td { padding: 6px 12px; border-bottom: 1px solid var(--list-line); white-space: nowrap; }
   #list tr { cursor: default; user-select: none; }
-  #list tr.sel td { background: #33506b; }
+  #list tr.sel td { background: var(--sel); }
   #list tr.cut { opacity: .5; }
   .ico { display: inline-block; width: 18px; height: 18px; vertical-align: -4px; margin-right: 8px; }
   .ico svg { width: 18px; height: 18px; display: block; }
   #empty { padding: 30px; text-align: center; }
   .statusbar { padding: 8px 2px; color: var(--muted); font-size: 13px; }
   .ctx { position: fixed; z-index: 100; min-width: 190px; padding: 5px; background: var(--panel2);
-         border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, .5); }
+         border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
   .ctx div { padding: 7px 12px; border-radius: 4px; cursor: pointer; }
-  .ctx div:hover { background: #3d434b; }
+  .ctx div:hover { background: var(--ctx-hover); }
   .ctx hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
   dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; max-width: 94vw; }
-  dialog::backdrop { background: rgba(0, 0, 0, .6); }
+  dialog::backdrop { background: var(--backdrop); }
   #editor { width: min(900px, 94vw); }
   #pdlg { width: min(520px, 94vw); }
   @media (max-width: 900px) { .fx { grid-template-columns: 1fr; } #tree { display: none; } #filter { width: 120px; } }

@@ -3,6 +3,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Network</title>
 <link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
 <script src="/shell.js" defer></script>
 <p><a href="/">&larr; Back</a></p>
 <h1>Network</h1>
@@ -126,7 +127,7 @@ function spark(canvas, rx, tx) {
     });
     ctx.stroke();
   };
-  draw(rx, "#4ade80"); draw(tx, "#60a5fa");
+  draw(rx, AdminTheme.css("--ok")); draw(tx, AdminTheme.css("--accent"));
 }
 
 async function loadOverview() {

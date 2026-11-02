@@ -13,7 +13,7 @@ window.SSHKeyUI = (function () {
     if (dlg) return;
     const st = el("style");
     st.textContent = "#sshgen{background:var(--panel,#24272c);color:var(--text,#e6e8eb);border:1px solid var(--line,#373c43);border-radius:10px;padding:18px 20px;width:min(720px,94vw)}" +
-      "#sshgen::backdrop{background:rgba(0,0,0,.6)}#sshgen label{display:block;margin:10px 0}" +
+      "#sshgen::backdrop{background:var(--backdrop,rgba(0,0,0,.6))}#sshgen label{display:block;margin:10px 0}" +
       "#sshgen input[type=text],#sshgen input[type=password]{width:100%;margin-top:4px}" +
       "#sshgen pre{max-height:170px;overflow:auto;white-space:pre-wrap;word-break:break-all}";
     document.head.appendChild(st);

@@ -3,19 +3,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Logs</title>
 <link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
 <script src="/shell.js" defer></script>
 <style>
   .filters label { margin-right: 4px; }
-  #jbox { height: calc(100vh - 330px); min-height: 320px; overflow: auto; background: #121417;
+  #jbox { height: calc(100vh - 330px); min-height: 320px; overflow: auto; background: var(--code-bg);
           border: 1px solid var(--line); border-radius: 8px; font: 13px/1.5 var(--mono); }
   .jr { display: grid; grid-template-columns: 150px 190px 1fr; gap: 12px; padding: 2px 12px; border-left: 3px solid transparent; }
-  .jr:hover { background: rgba(255, 255, 255, .04); }
+  .jr:hover { background: var(--row-hover); }
   .jr .t, .jr .u { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .jr .m { white-space: pre-wrap; word-break: break-word; }
   .jr.p0, .jr.p1, .jr.p2, .jr.p3 { border-left-color: var(--crit); }
-  .jr.p0 .m, .jr.p1 .m, .jr.p2 .m, .jr.p3 .m { color: #ffb4ad; }
+  .jr.p0 .m, .jr.p1 .m, .jr.p2 .m, .jr.p3 .m { color: var(--log-crit); }
   .jr.p4 { border-left-color: var(--warn); }
-  .jr.p4 .m { color: #f8dc94; }
+  .jr.p4 .m { color: var(--log-warn); }
   .jr.p5 { border-left-color: var(--accent); }
   .jr.p7 .m { color: var(--muted); }
   #jstatus { margin: 8px 2px; font-size: 13px; }

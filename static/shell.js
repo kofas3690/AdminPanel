@@ -42,7 +42,10 @@
     const out = el("button", "", "Log out");
     pop.append(who, out);
     menu.append(sess, pop);
-    top.append(burger, brand, el("div", "spacer"), chip, menu);
+    const themeBtn = window.AdminTheme ? window.AdminTheme.button() : null;
+    top.append(burger, brand, el("div", "spacer"), chip);
+    if (themeBtn) top.append(themeBtn);
+    top.append(menu);
 
     /* sidebar */
     const side = el("aside", "side");

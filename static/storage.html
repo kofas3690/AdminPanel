@@ -3,6 +3,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Storage</title>
 <link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
 <script src="/shell.js" defer></script>
 <script src="/storage-extra.js" defer></script>
 <script src="/storage-extra2.js" defer></script>
@@ -15,7 +16,7 @@
   .lockbar .state { font-weight: 600; }
   .lockbar .state.open { color: var(--warn); }
   dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; max-width: 94vw; }
-  dialog::backdrop { background: rgba(0, 0, 0, .6); }
+  dialog::backdrop { background: var(--backdrop); }
   #opdlg { width: min(780px, 94vw); }
   #opdlg label, #unlockdlg label { display: block; margin: 10px 0; }
   #opdlg input[type=text], #opdlg select, #unlockdlg input { width: 100%; margin-top: 4px; }
