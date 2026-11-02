@@ -4,7 +4,7 @@
 
 ![Dashboard](screenshots/dashboard.png)
 
-> **Status:** version 0.9.3, active development. Install only on machines you control. The panel can change disks, networking and accounts.
+> **Status:** version 0.9.4, active development. Install only on machines you control. The panel can change disks, networking and accounts.
 
 ---
 
@@ -33,6 +33,7 @@
 | **Updates** | Check for APT updates and run update / upgrade jobs |
 | **Firewall** | UFW rules, status, routing rules |
 | **Users** | Create, lock, unlock, delete Linux accounts and set passwords |
+| **Themes** | Dark and Light, switched from the top bar and remembered per browser |
 | **Terminal** | Browser terminal (xterm.js) over SSH to this machine, password or **SSH key** |
 | **File manager** | Explorer-style SFTP browser: upload, download, edit, as a chosen non-root account, password or **SSH key** |
 | **Storage** | Disks and mounts, partitions, LVM, RAID (mdadm), LUKS encryption, iSCSI initiator and target, secure erase jobs |
@@ -48,7 +49,7 @@ Requirements: Ubuntu or Debian (or a derivative) with systemd, Python 3.10 or ne
 ```bash
 # 1. Download the latest adminpanel_X.Y.Z_all.deb from the Releases page, then:
 sudo apt update
-sudo apt install ./adminpanel_0.9.3_all.deb
+sudo apt install ./adminpanel_0.9.4_all.deb
 
 # 2. First-run setup: certificate, web server, administrator account, two-step verification
 sudo adminpanel-setup
