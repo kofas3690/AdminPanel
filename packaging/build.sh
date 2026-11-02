@@ -18,7 +18,7 @@ say() { echo "==> $*"; }
 command -v dpkg-deb >/dev/null || die "dpkg-deb is required. Build this on Ubuntu or Debian."
 
 MODULES=(app auth audit store system services logs updates firewall users terminal storage storage_admin fs network security journal units userunits create_user enroll_2fa sshkeys)
-HELPERS=(apt ufw users net disk userunits)
+HELPERS=(apt ufw users net disk userunits units)
 
 say "Checking the source files"
 for m in "${MODULES[@]}"; do [ -f "$ROOT/$m.py" ] || die "missing $m.py in $ROOT"; done

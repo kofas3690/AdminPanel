@@ -1,0 +1,110 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Systemd units page: start, stop, restart ... one SYSTEM unit.
+
+Called by the panel as:  sudo adminpanel-units policy NAME
+                         sudo adminpanel-units act ACTION NAME
+Everything is validated again here; the web application is not trusted.
+"""
+import fcntl, fnmatch, json, re, subprocess, sys, syslog
+
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+SYSTEMCTL = "/usr/bin/systemctl"
+LOCKFILE = "/run/adminpanel-units.lock"
+UNIT_RE = re.compile(
+    r"[A-Za-z0-9_](?:[A-Za-z0-9:_.@-]|\\x[0-9a-f]{2}){0,200}\.(service|socket|timer|path|target)")
+ACTIONS = ("start", "stop", "restart", "reload", "enable", "disable", "reset-failed")
+# Units the panel never touches: stopping them would break the panel or the machine.
+PROTECTED = ("adminpanel*", "dbus*", "systemd-journald*", "systemd-logind*",
+             "systemd-udevd*", "systemd-networkd*", "systemd-resolved*", "init.scope")
+# Units that may be started or restarted but never stopped or disabled
+# (doing so from the web would cut off the way back in).
+NO_STOP = ("ssh.service", "sshd.service", "ssh.socket", "sshd.socket", "nginx.service")
+
+
+class Bad(Exception):
+    pass
+
+
+def need(cond, msg):
+    if not cond:
+        raise Bad(msg)
+
+
+def check_unit(name):
+    need(isinstance(name, str) and UNIT_RE.fullmatch(name) is not None, "invalid unit name")
+    return name
+
+
+def match(name, patterns):
+    return any(fnmatch.fnmatchcase(name, p) for p in patterns)
+
+
+def policy(name):
+    kind = name.rsplit(".", 1)[1]
+    if kind == "target":
+        return [], "Targets can be viewed but not controlled from the web"
+    if match(name, PROTECTED):
+        return [], "Protected: stopping this could break the panel or the machine. Use the console."
+    acts = list(ACTIONS)
+    why = ""
+    if kind != "service":
+        acts.remove("reload")
+    if match(name, NO_STOP):
+        acts = [a for a in acts if a not in ("stop", "disable")]
+        why = "This unit can be started or restarted, but not stopped or disabled from the web."
+    return acts, why
+
+
+def log(msg):
+    syslog.openlog("adminpanel-units")
+    syslog.syslog(syslog.LOG_NOTICE, msg)
+
+
+def systemctl(*args, timeout=30):
+    try:
+        return subprocess.run([SYSTEMCTL, *args], capture_output=True, text=True,
+                              errors="replace", env=ENV, timeout=timeout,
+                              stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        raise Bad("systemctl took too long")
+    except FileNotFoundError:
+        raise Bad("systemctl is not installed")
+
+
+def cmd_policy(name):
+    acts, why = policy(check_unit(name))
+    print(json.dumps({"actions": acts, "reason": why}))
+
+
+def cmd_act(action, name):
+    need(action in ACTIONS, "unknown action")
+    check_unit(name)
+    acts, why = policy(name)
+    need(action in acts, why or "that action isn't allowed for this unit")
+    with open(LOCKFILE, "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        load = systemctl("show", "-p", "LoadState", "--value", name).stdout.strip()
+        need(load not in ("", "not-found"), "no such unit")
+        log(f"{action} {name}")
+        r = systemctl(action, name, timeout=85)
+    out = (r.stderr or r.stdout).strip()
+    need(r.returncode == 0, out or f"systemctl {action} failed")
+    print(out or "done")
+
+
+def main():
+    a = sys.argv[1:]
+    try:
+        if len(a) == 2 and a[0] == "policy":
+            cmd_policy(a[1])
+        elif len(a) == 3 and a[0] == "act":
+            cmd_act(a[1], a[2])
+        else:
+            print("usage: policy NAME | act ACTION NAME", file=sys.stderr)
+            sys.exit(2)
+    except Bad as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
+
+
+main()

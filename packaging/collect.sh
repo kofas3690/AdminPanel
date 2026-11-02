@@ -6,7 +6,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 LIVE="$HERE/live"
 mkdir -p "$LIVE/sbin"
 missing=0
-for h in apt ufw users net disk userunits; do
+for h in apt ufw users net disk userunits units; do
     src="/usr/local/sbin/adminpanel-$h"
     if [ -f "$src" ]; then
         cp "$src" "$LIVE/sbin/adminpanel-$h"
