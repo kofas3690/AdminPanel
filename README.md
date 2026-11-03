@@ -153,7 +153,6 @@ Installed layout: application in `/opt/adminpanel`, root helpers in `/usr/local/
 - [ ] Root-owned application code (hardening)
 - [ ] Offline package with bundled Python wheels
 - [ ] Automated tests and release builds with GitHub Actions
-- [ ] License
 
 ---
 
