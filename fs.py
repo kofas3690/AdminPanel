@@ -15,7 +15,7 @@ from sshkeys import load_pkey
 
 router = APIRouter(prefix="/api/fs")
 
-KNOWN_HOSTS = Path(__file__).parent / "ssh_known_hosts"
+KNOWN_HOSTS = Path("/var/lib/adminpanel/ssh_known_hosts")   # root-owned: the panel can read it, not change it
 USER_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 IDLE = 15 * 60
 MAX_PER_SESSION, MAX_TOTAL = 3, 8

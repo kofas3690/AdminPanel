@@ -33,9 +33,12 @@ step_ssh() {
         ssh-keygen -A >/dev/null 2>&1 || true
     fi
     if [ -f /etc/ssh/ssh_host_ed25519_key.pub ]; then
-        printf '127.0.0.1 %s\n' "$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)" > "$APP/ssh_known_hosts"
-        chown adminpanel:adminpanel "$APP/ssh_known_hosts"
-        chmod 640 "$APP/ssh_known_hosts"
+        # Kept in the root-owned state folder: the panel can read the pin but cannot change it.
+        install -d -m 755 "$STATE"
+        printf '127.0.0.1 %s\n' "$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)" > "$STATE/ssh_known_hosts"
+        chown root:adminpanel "$STATE/ssh_known_hosts"
+        chmod 640 "$STATE/ssh_known_hosts"
+        rm -f "$APP/ssh_known_hosts"        # the old location, writable by the panel
         echo "done"
     else
         warn "no SSH host key found. The Terminal and File manager will not work (sudo apt install openssh-server, then run: adminpanel-setup ssh)"

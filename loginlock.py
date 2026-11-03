@@ -9,6 +9,7 @@ import time
 from store import PersistentDict
 
 MAX_FAILS, WINDOW = 5, 300
+ACCOUNT_MAX_FAILS = 10      # per target Linux account, from any address
 fails = PersistentDict("fs_fail", expires_at=lambda v: v[1] + WINDOW)
 
 
@@ -16,9 +17,13 @@ def key(ip, panel_user):
     return f"{ip}:{panel_user}"
 
 
-def locked(k):
+def account_key(linux_user):
+    return f"account:{linux_user}"
+
+
+def locked(k, limit=MAX_FAILS):
     rec = fails.get(k)
-    return bool(rec and time.time() - rec[1] <= WINDOW and rec[0] >= MAX_FAILS)
+    return bool(rec and time.time() - rec[1] <= WINDOW and rec[0] >= limit)
 
 
 def record_failure(k, n=1):

@@ -10,7 +10,7 @@ router = APIRouter()
 
 SSH = "/usr/bin/ssh"
 SETSID = "/usr/bin/setsid"
-KNOWN_HOSTS = Path(__file__).parent / "ssh_known_hosts"
+KNOWN_HOSTS = Path("/var/lib/adminpanel/ssh_known_hosts")   # root-owned: the panel can read it, not change it
 ENV = {"PATH": "/usr/bin:/bin", "TERM": "xterm-256color",
        "HOME": str(Path(__file__).parent), "LANG": "C.UTF-8"}
 NAME = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
@@ -49,11 +49,13 @@ def too_many_opens(user):
 class FailureWatch:
     """Counts ssh's failed-sign-in messages in the terminal output stream.
 
-    The password is typed straight into ssh, so the panel never sees it; the only
-    way to learn that a sign-in failed is to read what ssh prints."""
+    Keystrokes (including the password) pass through the panel on their way to ssh, but the
+    panel never inspects or logs them; the only way to learn that a sign-in failed is to read
+    what ssh prints."""
 
     def __init__(self, started):
         self.started = started
+        self.total = 0           # failures seen in this session
         self.tail = b""          # end of the previous chunk, in case a message is split in two
 
     def feed(self, data, now):
@@ -63,6 +65,7 @@ class FailureWatch:
         hits = list(FAIL_RE.finditer(buf))
         rest = buf[hits[-1].end():] if hits else buf
         self.tail = rest[-40:]
+        self.total += len(hits)
         return len(hits)
 
 
@@ -98,7 +101,8 @@ def ssh_args(u, keyfd=None):
                  "-o", "PreferredAuthentications=publickey",
                  "-o", "IdentitiesOnly=yes",
                  "-o", f"IdentityFile=/dev/fd/{keyfd}"]
-    args += ["-o", "NumberOfPasswordPrompts=3",
+    args += ["-o", "ConnectTimeout=10",
+             "-o", "NumberOfPasswordPrompts=3",
              "-o", "ServerAliveInterval=30",
              "-o", "ClearAllForwardings=yes",
              "-o", "ForwardAgent=no", "-o", "ForwardX11=no",
@@ -145,16 +149,35 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24, a
     if sum(active.values()) >= MAX_TOTAL or active.get(user, 0) >= MAX_PER_USER:
         await ws.close(code=1013)
         return
-    await ws.accept()
+    # Reserve the session slot before the first await, so several simultaneous connections
+    # cannot all pass the limit check above.
+    active[user] = active.get(user, 0) + 1
+
+    def release():
+        active[user] -= 1
+        if active[user] <= 0:
+            del active[user]
+
     lock_key = loginlock.key(ws.client.host, user)
-    if loginlock.locked(lock_key):
+    acct_key = loginlock.account_key(u)
+
+    def is_locked():
+        return (loginlock.locked(lock_key)
+                or loginlock.locked(acct_key, loginlock.ACCOUNT_MAX_FAILS))
+
+    try:
+        await ws.accept()
+    except Exception:
+        release()
+        return
+    if is_locked():
         try:
             await ws.send_bytes(LOCKED_MSG)
             await ws.close()
         except Exception:
             pass
+        release()
         return
-    active[user] = active.get(user, 0) + 1
 
     started = last_input = time.time()
     loop = asyncio.get_running_loop()
@@ -175,9 +198,10 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24, a
         failed = watch.feed(data, time.time()) if data else 0
         if failed:
             loginlock.record_failure(lock_key, failed)
+            loginlock.record_failure(acct_key, failed)
             audit(user, ws.client.host, "terminal_auth_failed", target=u, count=failed)
         queue.put_nowait(data)
-        if failed and loginlock.locked(lock_key):      # stop further guesses right now
+        if failed and is_locked():                     # stop further guesses right now
             queue.put_nowait(LOCKED_MSG)
             queue.put_nowait(b"")
             stop_reading()
@@ -220,7 +244,7 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24, a
                     c = json.loads(msg["text"])
                     if c.get("type") == "resize":
                         set_size(master, clamp(c["rows"]), clamp(c["cols"]))
-                except (ValueError, KeyError, TypeError):
+                except Exception:        # a malformed control message is ignored, never fatal
                     pass
 
     async def watchdog():
@@ -276,12 +300,10 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24, a
         for fd in (master, slave, keyfd):
             if fd != -1:
                 os.close(fd)
-        active[user] -= 1
-        if active[user] <= 0:
-            del active[user]
+        release()
         if proc is not None:
             audit(user, ws.client.host, "terminal_close", target=u,
-                  seconds=int(time.time() - started))
+                  seconds=int(time.time() - started), auth_failures=watch.total)
         try:
             await ws.close()
         except Exception:

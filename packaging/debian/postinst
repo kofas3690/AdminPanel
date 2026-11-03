@@ -45,6 +45,19 @@ configure)
         if [ -f "$APP/$f" ]; then chmod 600 "$APP/$f"; fi
     done
 
+    # 3b. upgrade from 0.9.7 or older: the pinned SSH host key moves to the root-owned state folder,
+    #     where the panel account can read it but not change it. It is re-pinned from the real host key.
+    if [ -f "$APP/ssh_known_hosts" ]; then
+        pin=/var/lib/adminpanel/ssh_known_hosts
+        if [ -f /etc/ssh/ssh_host_ed25519_key.pub ]; then
+            printf '127.0.0.1 %s\n' "$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)" > "$pin"
+        elif [ ! -f "$pin" ]; then
+            cp "$APP/ssh_known_hosts" "$pin"
+        fi
+        chown root:adminpanel "$pin"; chmod 640 "$pin"
+        rm -f "$APP/ssh_known_hosts"
+    fi
+
     # 4. sudo rules (each one is checked before it is installed)
     for f in "$SHARE"/sudoers/*; do
         name=$(basename "$f")

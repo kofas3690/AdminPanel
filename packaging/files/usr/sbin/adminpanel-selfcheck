@@ -85,7 +85,13 @@ fi
 for f in users.json panel.db audit.log; do
     if [ -f "$APP/$f" ] && [ "$(stat -c '%a' "$APP/$f")" != "600" ]; then bad "$APP/$f should be mode 600"; fi
 done
-[ -f "$APP/ssh_known_hosts" ] && ok "the SSH host key is pinned" || note "the SSH host key is not pinned (Terminal and File manager need: sudo adminpanel-setup ssh)"
+if [ -f "$STATE/ssh_known_hosts" ]; then
+    if [ "$(stat -c '%U' "$STATE/ssh_known_hosts")" = root ]; then ok "the SSH host key is pinned (root-owned)"
+    else bad "$STATE/ssh_known_hosts should be owned by root. Run: sudo adminpanel-setup ssh"; fi
+elif [ -f "$APP/ssh_known_hosts" ]; then
+    bad "the SSH host key pin is still in the old, panel-writable place. Run: sudo adminpanel-setup ssh"
+else note "the SSH host key is not pinned (Terminal and File manager need: sudo adminpanel-setup ssh)"
+fi
 if [ -f "$APP/users.json" ]; then
     n=$(runuser -u adminpanel -- "$PY" -c "import json; print(len(json.load(open('$APP/users.json'))))" 2>/dev/null || echo 0)
     [ "$n" -gt 0 ] && ok "$n panel administrator(s) configured" || note "no panel administrator yet. Run: sudo adminpanel-setup user"
