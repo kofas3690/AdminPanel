@@ -4,6 +4,7 @@
 #   sudo adminpanel-setup tls [--port N] [--regen] certificate and web server site
 #   sudo adminpanel-setup ssh                      pin this machine's SSH host key
 #   sudo adminpanel-setup ssh-local                allow password sign-in over SSH from this machine only
+#   sudo adminpanel-setup ssh-restrict GROUP|off   limit that password sign-in to members of GROUP (off: everyone)
 #   sudo adminpanel-setup user                     create or reset a panel administrator
 #   sudo adminpanel-setup 2fa                      set up two-step verification
 set -euo pipefail
@@ -52,6 +53,9 @@ step_ssh_local() {
     say "Password sign-in over SSH from this machine only"
     local sshd=/usr/sbin/sshd eff remote f=/etc/ssh/sshd_config.d/60-adminpanel-localhost.conf
     [ -x "$sshd" ] || { warn "no SSH server is installed (sudo apt install openssh-server)"; return 0; }
+    if grep -q '^Match Address .* Group ' "$f" 2>/dev/null; then
+        echo "already set up and limited to a group (see: sudo adminpanel-setup ssh-restrict)"; return 0
+    fi
     eff=$($sshd -T -C user=root,host=localhost,addr=127.0.0.1,laddr=127.0.0.1,lport=22 2>/dev/null | awk '$1=="passwordauthentication"{print $2}')
     if [ "$eff" = "yes" ]; then echo "already allowed for connections from this machine"; return 0; fi
     [ -d /etc/ssh/sshd_config.d ] || die "this SSH server has no sshd_config.d folder. Add this to /etc/ssh/sshd_config by hand: Match Address 127.0.0.1,::1 / PasswordAuthentication yes / Match all"
@@ -73,6 +77,49 @@ EOF
     remote=$($sshd -T -C user=root,host=example,addr=192.0.2.10,laddr=192.0.2.1,lport=22 2>/dev/null | awk '$1=="passwordauthentication"{print $2}')
     echo "password sign-in from this machine: ${eff:-unknown}; from other machines: ${remote:-unknown}"
     echo "Linux accounts still need a password to use these tools (for example: sudo passwd YOURNAME)."
+}
+
+step_ssh_restrict() {
+    local grp="${1:-}" sshd=/usr/sbin/sshd f=/etc/ssh/sshd_config.d/60-adminpanel-localhost.conf bak chk
+    [ -n "$grp" ] || die "usage: adminpanel-setup ssh-restrict GROUP   (or: off)"
+    [ -x "$sshd" ] || die "no SSH server is installed (sudo apt install openssh-server)"
+    [ -f "$f" ] || die "run this first: sudo adminpanel-setup ssh-local"
+    bak=$(mktemp)
+    cp "$f" "$bak"
+    if [ "$grp" = off ]; then
+        cat > "$f" <<EOF
+# Added by adminpanel-setup. Allows the panel Terminal and File manager to sign in from this machine only.
+Match Address 127.0.0.1,::1
+    PasswordAuthentication yes
+Match all
+EOF
+    else
+        case "$grp" in ''|[!a-z_]*|*[!a-z0-9_-]*) rm -f "$bak"; die "the group name must be lower case letters, digits, _ and -" ;; esac
+        [ "${#grp}" -le 32 ] || { rm -f "$bak"; die "the group name is too long"; }
+        getent group "$grp" >/dev/null || addgroup --system "$grp" >/dev/null
+        cat > "$f" <<EOF
+# Added by adminpanel-setup. Password sign-in over SSH from this machine only, and only for members of "$grp".
+Match Address 127.0.0.1,::1 Group $grp
+    PasswordAuthentication yes
+Match all
+EOF
+    fi
+    chmod 644 "$f"
+    chk=$(mktemp)
+    if ! $sshd -t 2>"$chk"; then
+        cp "$bak" "$f"; cat "$chk" >&2; rm -f "$chk" "$bak"
+        die "the SSH server rejected the change, so the previous file was put back"
+    fi
+    rm -f "$chk" "$bak"
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+    if [ "$grp" = off ]; then
+        echo "password sign-in from this machine is allowed for every account again"
+    else
+        echo "password sign-in from this machine is now limited to members of the group '$grp'."
+        echo "Add each account that should use the Terminal and File manager, for example:"
+        echo "    sudo usermod -aG $grp YOURNAME"
+        echo "Members now: $(getent group "$grp" | cut -d: -f4)"
+    fi
 }
 
 step_tls() {
@@ -198,7 +245,8 @@ case "$cmd" in
     tls)        step_tls "$@"; systemctl restart adminpanel.service ;;
     ssh)        step_ssh ;;
     ssh-local)  step_ssh_local ;;
+    ssh-restrict) step_ssh_restrict "$@" ;;
     user)       step_user ;;
     2fa)        step_2fa ;;
-    *)          sed -n '2,9p' "$0"; exit 2 ;;
+    *)          sed -n '2,10p' "$0"; exit 2 ;;
 esac

@@ -13,7 +13,7 @@ SETSID = "/usr/bin/setsid"
 KNOWN_HOSTS = Path("/var/lib/adminpanel/ssh_known_hosts")   # root-owned: the panel can read it, not change it
 ENV = {"PATH": "/usr/bin:/bin", "TERM": "xterm-256color",
        "HOME": str(Path(__file__).parent), "LANG": "C.UTF-8"}
-NAME = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,31}")
 MAX_TOTAL, MAX_PER_USER = 3, 2
 IDLE_LIMIT = 15 * 60
 KEY_WAIT = 30

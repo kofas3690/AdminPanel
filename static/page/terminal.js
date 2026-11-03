@@ -27,7 +27,7 @@ function setState(text, connected) {
 function connect() {
   if (ws) return;
   const user = document.getElementById("luser").value.trim();
-  if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(user)) { alert("Invalid user name"); return; }
+  if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,31}$/.test(user)) { alert("Invalid user name"); return; }
   term.reset();
   fit.fit();
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
