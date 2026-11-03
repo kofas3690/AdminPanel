@@ -1,0 +1,17 @@
+#!/bin/sh
+# Shown after a successful login (SSH or console) on Ubuntu: tells the user where the
+# AdminPanel web console is. Runs as root through pam_motd, so keep it quick and read-only.
+# Edit or delete this file to change or hide the message; dpkg keeps your edits on upgrade.
+[ -x /usr/sbin/adminpanel-setup ] || exit 0          # the package was removed
+port=$(cat /var/lib/adminpanel/port 2>/dev/null) || exit 0
+case "$port" in ''|*[!0-9]*) exit 0 ;; esac          # the web server is not set up yet
+
+urls="https://$(hostname):$port/"
+n=0
+for ip in $(hostname -I 2>/dev/null); do
+    case "$ip" in *:*) continue ;; esac               # IPv4 only, to keep the line short
+    n=$((n + 1)); [ "$n" -le 3 ] || break
+    urls="$urls or https://$ip:$port/"
+done
+echo "AdminPanel Web console: $urls"
+echo

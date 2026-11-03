@@ -109,6 +109,7 @@ find "$PKG/usr/share/adminpanel" -type d -exec chmod 755 {} +
 find "$PKG/usr/share/adminpanel" -type f -exec chmod 644 {} +
 install -m 644 "$FILES/usr/share/doc/adminpanel/README.md" "$PKG/usr/share/doc/adminpanel/README.md"
 install -D -m 644 "$FILES/etc/logrotate.d/adminpanel" "$PKG/etc/logrotate.d/adminpanel"
+install -D -m 755 "$FILES/etc/update-motd.d/90-adminpanel" "$PKG/etc/update-motd.d/90-adminpanel"
 
 say "Checking that no secrets or build leftovers are inside"
 leak=$(find "$PKG" \( -name users.json -o -name panel.db -o -name 'panel.db-*' -o -name audit.log -o -name ssh_known_hosts \
@@ -135,7 +136,7 @@ Description: Web administration panel for Ubuntu and Debian servers
  manager and a terminal. Privileged actions run through small root helpers
  with strict validation. After installing, run: sudo adminpanel-setup
 CTRL
-echo /etc/logrotate.d/adminpanel > "$PKG/DEBIAN/conffiles"
+printf '%s\n' /etc/logrotate.d/adminpanel /etc/update-motd.d/90-adminpanel > "$PKG/DEBIAN/conffiles"
 for s in postinst prerm postrm; do install -m 755 "$HERE/debian/$s" "$PKG/DEBIAN/$s"; done
 
 say "Building"
