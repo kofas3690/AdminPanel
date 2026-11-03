@@ -22,6 +22,13 @@ server {
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "DENY" always;
     add_header Referrer-Policy "no-referrer" always;
+    # Only scripts served by the panel itself may run (no inline scripts, no other sites).
+    # Styles may be inline; the terminal and log pages open a WebSocket back to this host.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' wss://$http_host; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'" always;
+    # HSTS is left off on purpose: browsers ignore it for IP addresses, and on a host name it
+    # would stop you clicking through the warning for the self-signed certificate.
+    # Once the panel has a certificate from a real authority, you may enable it:
+    # add_header Strict-Transport-Security "max-age=31536000" always;
 
     include snippets/adminpanel-upload.conf;
     include snippets/adminpanel-disks.conf;

@@ -53,6 +53,8 @@ smoke "disk helper"       /usr/local/sbin/adminpanel-disk inventory
 smoke "network helper"    /usr/local/sbin/adminpanel-net state
 smoke "user-units helper" /usr/local/sbin/adminpanel-userunits users
 smoke "units helper"      /usr/local/sbin/adminpanel-units policy nginx.service
+if [ -x /usr/bin/systemd-run ]; then ok "systemd-run is available (software updates survive a panel restart)"
+else bad "systemd-run is missing: software updates cannot run safely"; fi
 if out=$(sudo -u adminpanel sudo -n /usr/local/sbin/adminpanel-users list 2>&1) && printf '%s' "$out" | "$PY" -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then ok "accounts helper answers"
 else note "accounts helper did not answer"; fi
 if sudo -u adminpanel sudo -n /usr/local/sbin/adminpanel-ufw status >/dev/null 2>&1; then ok "firewall helper answers"
@@ -70,6 +72,11 @@ else
     if nginx -t >/dev/null 2>&1; then ok "nginx configuration is valid"; else bad "nginx configuration is invalid (run: nginx -t)"; fi
     c1=$(curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 "https://127.0.0.1:$port/login.html" 2>/dev/null || echo 000)
     if [ "$c1" = 200 ]; then ok "the login page answers over HTTPS on port $port"; else bad "the login page returned HTTP $c1 on port $port"; fi
+    if curl -ksSI --max-time 10 "https://127.0.0.1:$port/login.html" 2>/dev/null | grep -qi '^content-security-policy:'; then
+        ok "the Content-Security-Policy header is sent"
+    else
+        note "the web server does not send the Content-Security-Policy header yet. Run: sudo adminpanel-setup tls"
+    fi
     c2=$(curl -ksS -o /dev/null -w '%{http_code}' --max-time 10 "https://127.0.0.1:$port/api/stats" 2>/dev/null || echo 000)
     if [ "$c2" = 401 ]; then ok "protected pages refuse anonymous requests (401)"; else bad "protected API returned HTTP $c2 instead of 401"; fi
 fi

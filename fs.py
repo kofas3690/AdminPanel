@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from audit import audit
 from auth import current_user, sessions
-from store import PersistentDict
+from loginlock import MAX_FAILS, WINDOW, fails
 from sshkeys import load_pkey
 
 router = APIRouter(prefix="/api/fs")
@@ -23,10 +23,8 @@ MAX_UPLOAD = 500 * 1024 * 1024
 MAX_EDIT = 256 * 1024
 MAX_LIST = 5000
 MAX_LINKS = 300
-MAX_FAILS, WINDOW = 5, 300
 ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
 
-fails = PersistentDict("fs_fail", expires_at=lambda v: v[1] + WINDOW)
 pool = {}                      # (panel session token, linux user) -> Conn
 plock = threading.Lock()
 

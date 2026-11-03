@@ -1,0 +1,394 @@
+const $ = (id) => document.getElementById(id);
+const TYPE_RE = /\.(service|socket|timer|path|target)$/;
+const JSON_H = { "Content-Type": "application/json" };
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) { location.href = "/login.html"; throw new Error("not logged in"); }
+  return r;
+}
+async function errText(r) {
+  try { const j = await r.json(); if (typeof j.detail === "string") return j.detail; } catch (e) {}
+  return "Request failed (" + r.status + ")";
+}
+const qs = (o) => new URLSearchParams(o).toString();
+
+let all = [], extras = { timers: {}, sockets: {} };
+let tab = "service", view = "list", current = "", busy = false;
+let scope = "system", acct = "", USERS = [];
+try { if (sessionStorage.getItem("unitsScope") === "user") scope = "user"; } catch (e) {}
+
+/* ---------------- system or user scope ---------------- */
+const base = () => (scope === "user" ? "/api/uunits" : "/api/units");
+const withAcct = (o) => (scope === "user" ? { account: acct, ...o } : o);
+const unitHash = (name) => "#" + qs(scope === "user" ? { unit: name, user: acct } : { unit: name });
+
+function setScopeUI() {
+  document.querySelectorAll("#scopes button").forEach((b) => b.classList.toggle("on", b.dataset.s === scope));
+  $("acctbar").hidden = scope !== "user";
+  try { sessionStorage.setItem("unitsScope", scope); } catch (e) {}
+}
+
+function paintAcct() {
+  const u = USERS.find((x) => x.name === acct);
+  const st = $("acctstate");
+  if (!u) {
+    st.textContent = USERS.length ? "" : "There are no regular user accounts on this server.";
+    $("startmgr").hidden = true; $("lingerbox").hidden = true;
+    return;
+  }
+  st.textContent = u.running ? "Service manager running"
+    : "The service manager isn't running because this account isn't logged in, so its services can't be listed yet.";
+  $("startmgr").hidden = u.running;
+  $("lingerbox").hidden = false;
+  $("linger").checked = u.linger;
+}
+
+async function loadUsers() {
+  const r = await api("/api/uunits/users");
+  if (!r.ok) { $("acctstate").textContent = await errText(r); return; }
+  USERS = await r.json();
+  const sel = $("acct");
+  sel.replaceChildren();
+  for (const u of USERS) {
+    const o = document.createElement("option");
+    o.value = u.name; o.textContent = u.name + (u.running ? "" : "  (not running)");
+    sel.appendChild(o);
+  }
+  if (!acct || !USERS.some((u) => u.name === acct)) {
+    let want = "";
+    try { want = localStorage.getItem("unitsUser") || ""; } catch (e) {}
+    acct = USERS.some((u) => u.name === want) ? want : ((USERS.find((u) => u.running) || USERS[0] || {}).name || "");
+  }
+  sel.value = acct;
+  paintAcct();
+}
+
+async function setScope(s) {
+  scope = s; all = []; setScopeUI();
+  if (s === "user") await loadUsers();
+  loadList();
+}
+document.querySelectorAll("#scopes button").forEach((b) => { b.onclick = () => setScope(b.dataset.s); });
+
+$("acct").onchange = () => {
+  acct = $("acct").value;
+  try { localStorage.setItem("unitsUser", acct); } catch (e) {}
+  paintAcct(); all = []; loadList();
+};
+async function managerOp(op) {
+  const r = await api("/api/uunits/manager", { method: "POST", headers: JSON_H, body: JSON.stringify({ account: acct, op }) });
+  if (!r.ok) alert(await errText(r));
+  await loadUsers();
+  loadList();
+  return r.ok;
+}
+$("startmgr").onclick = () => {
+  if (confirm(`Start the service manager for ${acct}? Its enabled user services will start.`)) managerOp("start");
+};
+$("linger").onchange = async () => {
+  const want = $("linger").checked;
+  if (!(await managerOp(want ? "linger-on" : "linger-off"))) $("linger").checked = !want;
+};
+
+/* ---------------- shared helpers ---------------- */
+const COLS = {
+  service: ["Name", "Description", "State", "File state"],
+  target: ["Name", "Description", "State", "File state"],
+  socket: ["Name", "Description", "Listens on", "State", "File state"],
+  timer: ["Name", "Description", "Next run", "Last run", "State", "File state"],
+  path: ["Name", "Description", "State", "File state"],
+};
+
+function stateLabel(active, type) {
+  if (active === "failed") return ["Failed", "crit"];
+  if (active === "activating") return ["Starting", ""];
+  if (active === "deactivating") return ["Stopping", ""];
+  if (active === "active" || active === "reloading") {
+    if (type === "socket") return ["Listening", ""];
+    if (type === "timer" || type === "path") return ["Waiting", ""];
+    if (type === "target") return ["Active", ""];
+    return ["Running", ""];
+  }
+  return ["Not running", "muted"];
+}
+function fileGroup(s) {
+  if (!s) return "other";
+  if (s.startsWith("enabled")) return "enabled";
+  if (s.startsWith("masked")) return "masked";
+  return s === "disabled" || s === "static" ? s : "other";
+}
+function filePill(s) {
+  const span = document.createElement("span");
+  span.textContent = s ? s.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase()) : "\u2014";
+  const g = fileGroup(s);
+  if (g === "enabled") span.className = "pill on";
+  else if (g === "disabled") span.className = "pill off";
+  else if (g === "masked") span.className = "pill bad";
+  return span;
+}
+const fmtTime = (sec) => (sec ? new Date(sec * 1000).toLocaleString() : "\u2014");
+function fmtBytes(n) {
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(1) : Math.round(n)) + " " + u[i];
+}
+function cell(tr, text, cls) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  if (cls) td.className = cls;
+  tr.appendChild(td);
+  return td;
+}
+
+/* ---------------- list view ---------------- */
+function visible() {
+  const q = $("q").value.trim().toLowerCase(), fa = $("fa").value, ff = $("ff").value;
+  return all.filter((u) => {
+    if (u.type !== tab) return false;
+    if (q && !(u.name.toLowerCase().includes(q) || u.description.toLowerCase().includes(q))) return false;
+    if (fa === "active" && !(u.active === "active" || u.active === "reloading")) return false;
+    if (fa === "inactive" && u.active !== "inactive") return false;
+    if (fa === "failed" && u.active !== "failed") return false;
+    if (ff !== "all" && fileGroup(u.file_state) !== ff) return false;
+    return true;
+  });
+}
+
+function renderList() {
+  const head = document.createElement("tr");
+  for (const c of COLS[tab]) { const th = document.createElement("th"); th.textContent = c; head.appendChild(th); }
+  $("thead").replaceChildren(head);
+
+  const rows = visible();
+  $("count").textContent = rows.length + " shown";
+  const frag = document.createDocumentFragment();
+  for (const u of rows) {
+    const tr = document.createElement("tr");
+    const nameTd = document.createElement("td");
+    const a = document.createElement("a");
+    a.href = unitHash(u.name);
+    a.textContent = u.name.replace(TYPE_RE, "");
+    nameTd.appendChild(a);
+    tr.appendChild(nameTd);
+    cell(tr, u.description);
+    if (tab === "socket") cell(tr, ((extras.sockets[u.name] || {}).listen || []).join("\n"), "addr");
+    if (tab === "timer") {
+      const t = extras.timers[u.name] || {};
+      cell(tr, fmtTime(t.next));
+      cell(tr, fmtTime(t.last));
+    }
+    const [text, cls] = stateLabel(u.active, u.type);
+    cell(tr, text, cls);
+    const ft = document.createElement("td");
+    ft.appendChild(filePill(u.file_state));
+    tr.appendChild(ft);
+    frag.appendChild(tr);
+  }
+  $("rows").replaceChildren(frag);
+}
+
+async function loadList() {
+  const mine = scope + "|" + acct;
+  if (scope === "user") {
+    if (!acct) { all = []; renderList(); $("count").textContent = ""; return; }
+    const r = await api("/api/uunits/list?" + qs({ account: acct, extras: tab === "socket" || tab === "timer" ? "true" : "false" }));
+    if (mine !== scope + "|" + acct) return;
+    if (!r.ok) { $("count").textContent = "Error: " + await errText(r); return; }
+    const d = await r.json();
+    all = d.units;
+    if (d.extras) extras = d.extras;
+    renderList();
+    if (!d.running) $("count").textContent = "The service manager isn't running";
+    return;
+  }
+  const r = await api("/api/units");
+  if (mine !== scope + "|" + acct) return;
+  if (!r.ok) { $("count").textContent = "Error: " + await errText(r); return; }
+  all = await r.json();
+  if (tab === "socket" || tab === "timer") {
+    const e = await api("/api/units/extras");
+    if (e.ok) extras = await e.json();
+  }
+  renderList();
+}
+
+document.querySelectorAll("#tabs button").forEach((b) => {
+  b.onclick = () => {
+    tab = b.dataset.t;
+    document.querySelectorAll("#tabs button").forEach((x) => x.classList.toggle("on", x === b));
+    loadList();
+  };
+});
+$("q").oninput = renderList;
+$("fa").onchange = renderList;
+$("ff").onchange = renderList;
+
+/* ---------------- detail view ---------------- */
+const ACTION_LABEL = { start: "Start", stop: "Stop", restart: "Restart", reload: "Reload",
+                       enable: "Enable", disable: "Disable", "reset-failed": "Reset failed state" };
+
+function wanted(a, p, file) {
+  const on = p.ActiveState === "active" || p.ActiveState === "reloading";
+  switch (a) {
+    case "start": return !on;
+    case "stop": return on || p.ActiveState === "activating";
+    case "restart": return true;
+    case "reload": return on && p.CanReload === "yes";
+    case "enable": return file === "disabled";
+    case "disable": return file.startsWith("enabled");
+    case "reset-failed": return p.ActiveState === "failed";
+  }
+  return false;
+}
+
+function linkList(names) {
+  const frag = document.createDocumentFragment();
+  names.forEach((n, i) => {
+    if (i) frag.append(", ");
+    if (TYPE_RE.test(n)) {
+      const a = document.createElement("a");
+      a.href = unitHash(n);
+      a.textContent = n;
+      frag.appendChild(a);
+    } else frag.append(n);
+  });
+  return frag;
+}
+
+function renderDetail(d) {
+  const p = d.props, type = current.split(".").pop(), file = p.UnitFileState || "";
+  $("dtitle").textContent = current;
+  $("dscope").textContent = scope === "user" ? "User unit of the account " + acct : "System unit";
+  $("ddesc").textContent = p.Description || "";
+  const [st, cls] = stateLabel(p.ActiveState, type);
+  const s = $("dstate");
+  s.textContent = st + (p.SubState && p.SubState !== p.ActiveState ? " (" + p.SubState + ")" : "");
+  s.className = cls;
+  $("dfile").replaceChildren(filePill(file));
+
+  const bar = $("dactions");
+  bar.replaceChildren();
+  for (const a of ["start", "stop", "restart", "reload", "enable", "disable", "reset-failed"]) {
+    if (d.actions.includes(a) && wanted(a, p, file)) {
+      const b = document.createElement("button");
+      b.className = "act";
+      b.textContent = ACTION_LABEL[a];
+      b.disabled = busy;
+      b.onclick = () => doAction(a);
+      bar.appendChild(b);
+    }
+  }
+  $("dreason").textContent = d.reason || "";
+
+  const rows = [];
+  const add = (k, v) => { if (v !== null && v !== undefined && v !== "" && v !== "0") rows.push([k, String(v)]); };
+  const on = p.ActiveState === "active";
+  add("Type", p.Type || type);
+  add("Load state", p.LoadState);
+  add("Unit file", p.FragmentPath);
+  add("Drop-ins", (p.DropInPaths || []).join("\n"));
+  add(on ? "Active since" : "Inactive since", on ? p.ActiveEnterTimestamp : p.InactiveEnterTimestamp);
+  add("Main PID", p.MainPID);
+  add("Memory", p.MemoryCurrent ? fmtBytes(Number(p.MemoryCurrent)) : null);
+  add("CPU time", p.CPUUsageNSec ? (Number(p.CPUUsageNSec) / 1e9).toFixed(2) + " s" : null);
+  add("Tasks", p.TasksCurrent);
+  add("Restarts", p.NRestarts);
+  add("Last result", p.Result && p.Result !== "success"
+      ? p.Result + (p.ExecMainStatus && p.ExecMainStatus !== "0" ? " (exit " + p.ExecMainStatus + ")" : "") : null);
+  add("Documentation", (p.Documentation || []).join("\n"));
+  const pb = $("dprops");
+  pb.replaceChildren();
+  for (const [k, v] of rows) {
+    const tr = document.createElement("tr");
+    cell(tr, k);
+    cell(tr, v, "addr");
+    pb.appendChild(tr);
+  }
+
+  const rb = $("drels");
+  rb.replaceChildren();
+  for (const [label, key] of [["Requires", "Requires"], ["Wants", "Wants"], ["Binds to", "BindsTo"],
+      ["Part of", "PartOf"], ["Wanted by", "WantedBy"], ["Required by", "RequiredBy"],
+      ["Triggered by", "TriggeredBy"], ["Triggers", "Triggers"], ["After", "After"],
+      ["Before", "Before"], ["Conflicts", "Conflicts"]]) {
+    const list = p[key] || [];
+    if (!list.length) continue;
+    const tr = document.createElement("tr");
+    cell(tr, label);
+    const td = document.createElement("td");
+    td.appendChild(linkList(list));
+    tr.appendChild(td);
+    rb.appendChild(tr);
+  }
+  $("dstatus").textContent = d.status;
+}
+
+async function loadDetail() {
+  const r = await api(base() + "/detail?" + qs(withAcct({ name: current })));
+  if (!r.ok) { $("derr").textContent = await errText(r); return; }
+  $("derr").textContent = "";
+  renderDetail(await r.json());
+}
+
+async function loadLogs() {
+  const r = await api(base() + "/logs?" + qs(withAcct({ name: current, lines: $("lines").value })));
+  const box = $("logbox");
+  if (!r.ok) { box.textContent = await errText(r); return; }
+  const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
+  box.textContent = (await r.json()).text;
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+async function doAction(a) {
+  if (["stop", "restart", "disable"].includes(a) && !confirm(`${ACTION_LABEL[a]} ${current}?`)) return;
+  busy = true;
+  $("dmsg").textContent = "Working\u2026";
+  try {
+    const r = await api(base() + "/action", {
+      method: "POST", headers: JSON_H,
+      body: JSON.stringify(withAcct({ name: current, action: a })),
+    });
+    $("dmsg").textContent = r.ok ? "Done." : "Error: " + (await errText(r));
+  } finally { busy = false; }
+  await loadDetail();
+  loadLogs();
+}
+
+$("reload").onclick = loadLogs;
+$("lines").onchange = loadLogs;
+
+/* ---------------- routing and refresh ---------------- */
+async function route() {
+  const p = new URLSearchParams(location.hash.slice(1));
+  const name = p.get("unit") || "", u = p.get("user") || "";
+  if (name && TYPE_RE.test(name)) {
+    scope = u ? "user" : "system";
+    if (u) acct = u;
+    current = name; view = "detail";
+    $("listview").hidden = true;
+    $("detailview").hidden = false;
+    $("dmsg").textContent = ""; $("derr").textContent = "";
+    $("logbox").textContent = "";
+    loadDetail().then(loadLogs);
+    window.scrollTo(0, 0);
+  } else {
+    view = "list";
+    $("listview").hidden = false;
+    $("detailview").hidden = true;
+    setScopeUI();
+    if (scope === "user") await loadUsers();
+    loadList();
+  }
+}
+window.addEventListener("hashchange", route);
+
+setInterval(() => { if (!document.hidden && view === "list") loadList(); }, 5000);
+setInterval(() => { if (!document.hidden && view === "list" && scope === "user") loadUsers(); }, 15000);
+setInterval(() => {
+  if (document.hidden || view !== "detail" || busy) return;
+  loadDetail();
+  if ($("auto").checked) loadLogs();
+}, 3000);
+
+route();

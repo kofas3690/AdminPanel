@@ -1,6 +1,7 @@
 import asyncio, fcntl, json, os, pty, pwd, re, struct, termios, time
 from pathlib import Path
 from fastapi import APIRouter, WebSocket
+import loginlock
 from audit import audit
 from logs import ws_user, origin_ok
 from sshkeys import normalize_key
@@ -18,6 +19,11 @@ IDLE_LIMIT = 15 * 60
 KEY_WAIT = 30
 OPEN_LIMIT, OPEN_WINDOW = 10, 300   # at most 10 terminals per panel user per 5 minutes
 recent_opens = {}                  # panel user -> times of recent opens
+AUTH_PHASE = 120                   # only the first two minutes of a session can count as sign-in failures
+# ssh's own failure messages. A remote command's "Permission denied" looks different
+# ("ls: cannot open directory ...: Permission denied"), so it does not match.
+FAIL_RE = re.compile(rb"Permission denied(?:, please try again| \()")
+LOCKED_MSG = b"\r\n[Too many failed sign-ins. Try again in a few minutes.]\r\n"
 
 active = {}   # panel user -> number of open terminals
 
@@ -38,6 +44,26 @@ def too_many_opens(user):
     times.append(now)
     recent_opens[user] = times
     return False
+
+
+class FailureWatch:
+    """Counts ssh's failed-sign-in messages in the terminal output stream.
+
+    The password is typed straight into ssh, so the panel never sees it; the only
+    way to learn that a sign-in failed is to read what ssh prints."""
+
+    def __init__(self, started):
+        self.started = started
+        self.tail = b""          # end of the previous chunk, in case a message is split in two
+
+    def feed(self, data, now):
+        if now - self.started > AUTH_PHASE:
+            return 0
+        buf = self.tail + data
+        hits = list(FAIL_RE.finditer(buf))
+        rest = buf[hits[-1].end():] if hits else buf
+        self.tail = rest[-40:]
+        return len(hits)
 
 
 def clamp(n):
@@ -120,6 +146,14 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24, a
         await ws.close(code=1013)
         return
     await ws.accept()
+    lock_key = loginlock.key(ws.client.host, user)
+    if loginlock.locked(lock_key):
+        try:
+            await ws.send_bytes(LOCKED_MSG)
+            await ws.close()
+        except Exception:
+            pass
+        return
     active[user] = active.get(user, 0) + 1
 
     started = last_input = time.time()
@@ -129,6 +163,7 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24, a
     reading = False
     proc = None
     tasks = []
+    watch = FailureWatch(started)
 
     def on_readable():
         try:
@@ -137,7 +172,16 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24, a
             return
         except OSError:               # EIO: the program closed the terminal
             data = b""
+        failed = watch.feed(data, time.time()) if data else 0
+        if failed:
+            loginlock.record_failure(lock_key, failed)
+            audit(user, ws.client.host, "terminal_auth_failed", target=u, count=failed)
         queue.put_nowait(data)
+        if failed and loginlock.locked(lock_key):      # stop further guesses right now
+            queue.put_nowait(LOCKED_MSG)
+            queue.put_nowait(b"")
+            stop_reading()
+            return
         if not data or queue.qsize() > 64:
             stop_reading()
 

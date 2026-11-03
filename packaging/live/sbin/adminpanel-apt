@@ -1,14 +1,54 @@
 #!/bin/sh
+# Root helper for the Software updates page: "update" and "upgrade".
+#
+# The job runs as its own transient systemd unit (adminpanel-apt-job.service), NOT as a
+# child of the panel. Restarting or crashing the panel therefore cannot kill apt halfway
+# through a package change. The panel reads the progress from the files below:
+#   apt-job.log   everything the job printed
+#   apt-job.rc    the exit status, written when the job ends
+#   apt-job.kind  update or upgrade
+#   apt-job.id    a number that identifies this job
 set -eu
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
-export DEBIAN_FRONTEND=noninteractive
-export NEEDRESTART_MODE=l
+STATE=/var/lib/adminpanel
+UNIT=adminpanel-apt-job
+
+start_job() {
+    kind="$1"; shift
+    exec 9>/run/adminpanel-apt.lock
+    flock -n 9 || { echo "Another request is being handled" >&2; exit 3; }
+    state=$(systemctl show -p ActiveState --value "$UNIT.service" 2>/dev/null || true)
+    case "$state" in
+        active|activating|deactivating|reloading)
+            echo "A job is already running" >&2
+            exit 3
+            ;;
+    esac
+    install -d -m 755 "$STATE"
+    rm -f "$STATE/apt-job.rc"
+    : > "$STATE/apt-job.log"
+    echo "$kind" > "$STATE/apt-job.kind"
+    date +%s%N > "$STATE/apt-job.id"
+    chmod 644 "$STATE/apt-job.log" "$STATE/apt-job.kind" "$STATE/apt-job.id"
+    systemd-run --quiet --collect --unit="$UNIT" --description="AdminPanel: apt $kind" \
+        --setenv=DEBIAN_FRONTEND=noninteractive --setenv=NEEDRESTART_MODE=l --setenv=LC_ALL=C \
+        -p "StandardOutput=append:$STATE/apt-job.log" \
+        -p "StandardError=append:$STATE/apt-job.log" \
+        /bin/sh -c 'kind=$1; shift
+                    logger -t adminpanel-apt "$kind started"
+                    "$@"; rc=$?
+                    echo "$rc" > /var/lib/adminpanel/apt-job.rc
+                    logger -t adminpanel-apt "$kind finished, exit status $rc"
+                    exit "$rc"' sh "$kind" "$@"
+    echo "started"
+}
+
 case "${1:-}" in
   update)
-    exec /usr/bin/apt-get update --error-on=any
+    start_job update /usr/bin/apt-get update --error-on=any
     ;;
   upgrade)
-    exec /usr/bin/apt-get -y \
+    start_job upgrade /usr/bin/apt-get -y \
       -o DPkg::Lock::Timeout=120 \
       -o Dpkg::Options::=--force-confdef \
       -o Dpkg::Options::=--force-confold \
