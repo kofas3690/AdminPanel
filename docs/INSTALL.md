@@ -2,16 +2,16 @@
 
 This guide takes you from a fresh Ubuntu or Debian machine to a working, signed-in panel. Version 1.0.0.
 
-- [1. Requirements](#1-requirements)
-- [2. Install the package](#2-install-the-package)
-- [3. First-run setup](#3-first-run-setup)
-- [4. Open the panel](#4-open-the-panel)
-- [5. Terminal and File manager: SSH setup](#5-terminal-and-file-manager-ssh-setup)
-- [6. Optional components](#6-optional-components)
-- [7. Day-to-day operation](#7-day-to-day-operation)
-- [8. Upgrading](#8-upgrading)
-- [9. Uninstalling](#9-uninstalling)
-- [10. Troubleshooting](#10-troubleshooting)
+- [ Requirements](#1-requirements)
+- [ Install the package](#2-install-the-package)
+- [ First-run setup](#3-first-run-setup)
+- [ Open the panel](#4-open-the-panel)
+- [ Terminal and File manager: SSH setup](#5-terminal-and-file-manager-ssh-setup)
+- [ Optional components](#6-optional-components)
+- [ Day-to-day operation](#7-day-to-day-operation)
+- [ Upgrading](#8-upgrading)
+- [ Uninstalling](#9-uninstalling)
+- [ Troubleshooting](#10-troubleshooting)
 - [Developing from a git checkout](#developing-from-a-git-checkout)
 
 ---
