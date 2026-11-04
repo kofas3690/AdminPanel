@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field
 
 from audit import audit
 from auth import current_user, sessions
-from loginlock import MAX_FAILS, WINDOW, fails
+import loginlock
+from loginlock import ACCOUNT_MAX_FAILS, MAX_FAILS
 from sshkeys import load_pkey
 
 router = APIRouter(prefix="/api/fs")
@@ -135,6 +136,14 @@ def sftp_for(c):
             pass
 
 
+def real_path(s, p):
+    """Follows symlinks on the server, so saving writes to the file itself and never replaces the link."""
+    try:
+        return clean(s.normalize(p))
+    except Exception:
+        return p
+
+
 def exists(s, p):
     try:
         s.lstat(p)
@@ -190,22 +199,20 @@ def disposition(name):
 # ---------------- signing in to an account ----------------
 
 class ConnectBody(BaseModel):
-    user: str = Field(pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
+    user: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_.-]{0,31}$")
     password: str = Field(default="", max_length=256)
     private_key: str = Field(default="", max_length=16384)
     passphrase: str = Field(default="", max_length=256)
 
 
+pending = {}                   # panel session token -> sign-ins still being made
+
+
 @router.post("/connect")
 def connect(body: ConnectBody, request: Request, panel_user: str = Depends(current_user)):
     token = request.cookies.get("session")
-    ip = request.client.host
-    key = f"{ip}:{panel_user}"
     if bool(body.password) == bool(body.private_key):
         raise HTTPException(400, "Enter either a password or a private key")
-    rec = fails.get(key)
-    if rec and time.time() - rec[1] <= WINDOW and rec[0] >= MAX_FAILS:
-        raise HTTPException(429, "Too many failed attempts. Try again in a few minutes.")
     if not KNOWN_HOSTS.exists():
         raise HTTPException(500, "The SSH host key file is missing (see the Terminal setup)")
     try:
@@ -220,18 +227,39 @@ def connect(body: ConnectBody, request: Request, panel_user: str = Depends(curre
         if have is not None and alive(have):
             have.last = time.time()
             return {"user": body.user, "home": have.home}
-        if sum(1 for k in pool if k[0] == token) >= MAX_PER_SESSION or len(pool) >= MAX_TOTAL:
+        # Sign-ins that are in progress count too, so simultaneous requests cannot all pass the limits.
+        mine = sum(1 for k in pool if k[0] == token) + pending.get(token, 0)
+        if mine >= MAX_PER_SESSION or len(pool) + sum(pending.values()) >= MAX_TOTAL:
             raise HTTPException(409, "Too many accounts are connected. Disconnect one first.")
+        pending[token] = pending.get(token, 0) + 1
+    try:
+        return sign_in(body, request, panel_user, token, pw)
+    finally:
+        with plock:
+            left = pending.get(token, 1) - 1
+            if left > 0:
+                pending[token] = left
+            else:
+                pending.pop(token, None)
 
-    def rejected(msg):
-        count, first = fails.get(key, (0, time.time()))
-        fails[key] = (count + 1, first)
+
+def sign_in(body, request, panel_user, token, pw):
+    ip = request.client.host
+    pkey = load_pkey(body.private_key, body.passphrase) if body.private_key else None
+    # One attempt is counted BEFORE the password is tried (and given back if it succeeds), so a
+    # burst of simultaneous guesses cannot all pass the check, and a success never wipes the
+    # failures that came before it.
+    budgets = [(loginlock.key(ip, panel_user), MAX_FAILS),
+               (loginlock.account_key(body.user), ACCOUNT_MAX_FAILS)]
+    if not loginlock.reserve(budgets):
+        raise HTTPException(429, "Too many failed attempts. Try again in a few minutes.")
+
+    def rejected(msg):                      # the reservation stays: it is the failure
         audit(panel_user, ip, "fs_connect", target=body.user, ok=False)
         raise HTTPException(401, msg)
 
     if pw is None:
         rejected("Wrong user name or password")
-    pkey = load_pkey(body.private_key, body.passphrase) if body.private_key else None
     client = paramiko.SSHClient()
     client.load_host_keys(str(KNOWN_HOSTS))
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
@@ -244,11 +272,14 @@ def connect(body: ConnectBody, request: Request, panel_user: str = Depends(curre
         rejected("The server did not accept that key for this account" if pkey else "Wrong user name or password")
     except paramiko.SSHException as e:
         client.close()
+        loginlock.refund(budgets)           # no password was judged, so this is not a failure
         raise HTTPException(502, f"Could not open a secure connection to the SSH server: {e}"[:200])
     except OSError:
         client.close()
+        loginlock.refund(budgets)
         raise HTTPException(502, "The SSH server isn't reachable on this machine")
 
+    loginlock.refund(budgets)               # success: this attempt is not a failure
     client.get_transport().set_keepalive(30)
     c = Conn(client, body.user, pw.pw_dir, token)
     with plock:
@@ -259,7 +290,6 @@ def connect(body: ConnectBody, request: Request, panel_user: str = Depends(curre
             old.client.close()
         except Exception:
             pass
-    fails.pop(key, None)
     audit(panel_user, ip, "fs_connect", target=body.user, ok=True, method="key" if pkey else "password")
     return {"user": body.user, "home": pw.pw_dir}
 
@@ -326,10 +356,11 @@ def list_dir(path: str = "/", dirs_only: bool = False,
     except Exception as e:
         fail(e)
     free = None
-    try:
-        v = os.statvfs(p)
-        free = v.f_bavail * v.f_frsize
-    except OSError:
+    try:                                  # asked as the signed-in account, like everything else here
+        code, text, _ = run(c, ["df", "-Pk", "--", p], timeout=10)
+        if code == 0:
+            free = int(text.strip().splitlines()[-1].split()[3]) * 1024
+    except Exception:
         pass
     return {"path": p, "items": items, "truncated": truncated, "free": free}
 
@@ -461,6 +492,7 @@ def write_text(body: WriteBody, request: Request,
         raise HTTPException(413, "Text is too large (limit 256 KB)")
     try:
         with sftp_for(c) as s:
+            p = real_path(s, p)
             st = s.stat(p)
             if not stat.S_ISREG(st.st_mode or 0):
                 raise HTTPException(400, "Not a regular file")
@@ -472,13 +504,16 @@ def write_text(body: WriteBody, request: Request,
                 with s.open(tmp, "wb") as f:
                     f.write(data)
                 s.chmod(tmp, mode)
+                new_uid = s.stat(tmp).st_uid
+                if st.st_uid is not None and new_uid is not None and new_uid != st.st_uid:
+                    raise PermissionError("a new file would be owned by someone else")
                 s.posix_rename(tmp, p)
             except PermissionError:
                 try:
                     s.remove(tmp)
                 except Exception:
                     pass
-                with s.open(p, "wb") as f:      # the folder is read-only; write in place
+                with s.open(p, "wb") as f:      # read-only folder, or the owner would change: write in place
                     f.write(data)
             except Exception:
                 try:
