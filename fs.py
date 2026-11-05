@@ -1,4 +1,4 @@
-import asyncio, errno, grp, os, posixpath, pwd, re, secrets, shlex, stat, threading, time
+import asyncio, base64, errno, grp, os, posixpath, pwd, re, secrets, shlex, stat, threading, time
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -23,6 +23,7 @@ MAX_PER_SESSION, MAX_TOTAL = 3, 8
 MAX_UPLOAD = 500 * 1024 * 1024
 MAX_EDIT = 256 * 1024
 MAX_LIST = 5000
+MAX_SCAN = 100000            # entries looked at in one folder, shown or not
 MAX_LINKS = 300
 ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
 
@@ -153,7 +154,11 @@ def exists(s, p):
 
 
 def run(c, argv, timeout=300):
-    cmd = " ".join(shlex.quote(a) for a in argv)
+    # ssh hands this line to the account's LOGIN shell, which may not be a POSIX shell (fish, csh and
+    # tcsh quote differently). Base64 uses only letters, digits, + / =, which every shell passes
+    # through untouched, and /bin/sh then reads the real, shlex-quoted command from the pipe.
+    script = " ".join(shlex.quote(a) for a in argv)
+    cmd = "echo " + base64.b64encode(script.encode()).decode() + " | base64 -d | /bin/sh"
     try:
         _, out, err = c.client.exec_command(cmd, timeout=timeout)
         out_t = out.read().decode("utf-8", "replace")[:20000]
@@ -192,7 +197,8 @@ def version_of(st):
 
 
 def disposition(name):
-    ascii_name = name.encode("ascii", "replace").decode().replace('"', "_").replace("\\", "_").replace("?", "_")
+    ascii_name = name.encode("ascii", "replace").decode()
+    ascii_name = "".join("_" if (ch in '"\\?' or ord(ch) < 32 or ord(ch) == 127) else ch for ch in ascii_name)
     return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}"
 
 
@@ -273,8 +279,8 @@ def sign_in(body, request, panel_user, token, pw):
         # 403, not 401: a 401 means "your panel session has ended" and sends the browser to the main login page
         raise HTTPException(403, msg, headers=headers)
 
-    if pw is None:
-        rejected("Wrong user name or password")
+    # An account name that does not exist is NOT turned away here: it goes to the SSH server like any
+    # other, so the time taken (and the message) cannot tell the two cases apart.
     client = paramiko.SSHClient()
     client.load_host_keys(str(KNOWN_HOSTS))
     client.set_missing_host_key_policy(paramiko.RejectPolicy())
@@ -297,7 +303,8 @@ def sign_in(body, request, panel_user, token, pw):
     loginlock.refund(budgets)               # success: this attempt is not a failure
     loginlock.note_right(streak)
     client.get_transport().set_keepalive(30)
-    c = Conn(client, body.user, pw.pw_dir, token)
+    home = pw.pw_dir if pw is not None else "/"
+    c = Conn(client, body.user, home, token)
     with plock:
         old = pool.pop((token, body.user), None)
         pool[(token, body.user)] = c
@@ -307,7 +314,7 @@ def sign_in(body, request, panel_user, token, pw):
         except Exception:
             pass
     audit(panel_user, ip, "fs_connect", target=body.user, ok=True, method="key" if pkey else "password")
-    return {"user": body.user, "home": pw.pw_dir}
+    return {"user": body.user, "home": home}
 
 
 @router.get("/accounts")
@@ -342,7 +349,12 @@ def list_dir(path: str = "/", dirs_only: bool = False,
     uc, gc = {}, {}
     try:
         with sftp_for(c) as s:
-            for a in s.listdir_attr(p):
+            scanned = 0
+            for a in s.listdir_iter(p):          # a generator: a folder with millions of files is not loaded whole
+                scanned += 1
+                if scanned > MAX_SCAN:
+                    truncated = True
+                    break
                 mode = a.st_mode or 0
                 kind = kind_of(mode)
                 link_dir, target = False, ""
