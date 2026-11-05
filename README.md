@@ -4,7 +4,7 @@
 
 ![Dashboard](screenshots/dashboard.png)
 
-> **Status:** version 1.0.1, active development. Install only on machines you control. The panel can change disks, networking and accounts.
+> **Status:** version 1.0.2, active development. Install only on machines you control. The panel can change disks, networking and accounts.
 
 ---
 
@@ -49,7 +49,7 @@ Requirements: Ubuntu or Debian (or a derivative) with systemd, Python 3.10 or ne
 ```bash
 # 1. Download the latest adminpanel_X.Y.Z_all.deb from the Releases page, then:
 sudo apt update
-sudo apt install ./adminpanel_1.0.1_all.deb
+sudo apt install ./adminpanel_1.0.2_all.deb
 
 # 2. First-run setup: certificate, web server, administrator account, two-step verification
 sudo adminpanel-setup
@@ -86,7 +86,7 @@ ssh -L 8443:127.0.0.1:8443 YOURUSER@YOUR-SERVER-IP
 - **Privileged actions go through small root helpers** (`/usr/local/sbin/adminpanel-*`) that sudo allows by exact command. Each helper re-validates its input; the panel account cannot run arbitrary commands as root (`adminpanel-selfcheck` tests this).
 - **Disk changes need extra proof:** password + authenticator code ("unlock", valid for 10 minutes), typed confirmations, and a preview of the exact commands. One rule protects the system disk from every destructive action.
 - **Network changes roll back automatically** unless you confirm them.
-- **Terminal and File manager** use a pinned SSH host key, refuse `root`, count failed attempts, and time out when idle. An SSH key you supply is used once, held in memory only, never stored or logged.
+- **Terminal and File manager** use a pinned SSH host key, refuse `root`, count failed attempts, and time out when idle. An SSH key you supply is used once and never stored or logged (in the Terminal it lives for up to 30 seconds in a private RAM file).
 - **Sessions** use HttpOnly, SameSite=Strict, Secure cookies, and are stored hashed.
 
 Recommendations: keep port 8443 closed to the public internet where possible (use the SSH tunnel or allow only your own IP), keep the system updated, and keep your recovery codes offline.

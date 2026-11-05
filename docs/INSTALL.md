@@ -1,6 +1,6 @@
 # AdminPanel: installation and setup guide
 
-This guide takes you from a fresh Ubuntu or Debian machine to a working, signed-in panel. Version 1.0.1.
+This guide takes you from a fresh Ubuntu or Debian machine to a working, signed-in panel. Version 1.0.2.
 
 - [ Requirements](#1-requirements)
 - [ Install the package](#2-install-the-package)
@@ -34,15 +34,15 @@ Recommended (installed with the package unless you disable recommends): `openssh
 
 ## 2. Install the package
 
-1. Download `adminpanel_1.0.1_all.deb` from the [Releases](https://github.com/kofas3690/AdminPanel/releases) page, or build it yourself (see the README).
+1. Download `adminpanel_1.0.2_all.deb` from the [Releases](https://github.com/kofas3690/AdminPanel/releases) page, or build it yourself (see the README).
 2. Install it. Using `apt` (not `dpkg -i`) resolves dependencies:
 
 ```bash
 sudo apt update
-sudo apt install ./adminpanel_1.0.1_all.deb
+sudo apt install ./adminpanel_1.0.2_all.deb
 ```
 
-On a remote server, copy the file first: `scp adminpanel_1.0.1_all.deb YOURUSER@SERVER:/tmp/`, then install from `/tmp`.
+On a remote server, copy the file first: `scp adminpanel_1.0.2_all.deb YOURUSER@SERVER:/tmp/`, then install from `/tmp`.
 
 The installer creates the `adminpanel` service account, a Python environment in `/opt/adminpanel/.venv`, the sudo rules and root helpers, and starts `adminpanel.service`. It ends with:
 
@@ -139,7 +139,7 @@ On the Terminal or File manager page, choose **Sign in with: SSH key**. You can:
   The `from=` restriction means the key only works from the server itself, so a stolen copy is useless elsewhere.
 - **Or use your own key:** pick the private key file or paste it. OpenSSH and PEM formats work (Ed25519, RSA, ECDSA). PuTTY `.ppk` files must be converted first (PuTTYgen: Conversions, Export OpenSSH key). Hardware keys (`sk-`) and DSA are not supported.
 
-The panel never installs keys for you: authorizing the key is done by you, as that account. The key is used once, held in memory only, and never stored or logged. A key with a passphrase: in the File manager you type the passphrase in the form; in the Terminal, `ssh` asks for it in the terminal.
+The panel never installs keys for you: authorizing the key is done by you, as that account. The key is used once and never stored or logged. In the Terminal it exists for up to 30 seconds as a private file in RAM (readable only by the panel account) so that ssh can read it. A key with a passphrase: in the File manager you type the passphrase in the form; in the Terminal, `ssh` asks for it in the terminal.
 
 **Quick test from your PC** that the restriction works: `ssh -i panel_key YOURUSER@SERVER` must fail with `Permission denied (publickey)`.
 
