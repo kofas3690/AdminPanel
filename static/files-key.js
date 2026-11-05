@@ -20,13 +20,14 @@
   form.addEventListener("submit", async (e) => {
     if (method.value !== "key") return;
     e.preventDefault(); e.stopImmediatePropagation();
+    if (typeof waitLeft !== "undefined" && waitLeft > 0) return;     // still waiting after wrong attempts
     const user = q("luser").value.trim(), key = ui.getKey(), pass = ui.getPassphrase();
     if (!key.trim()) { q("lmsg").textContent = "Choose or paste a private key."; return; }
     q("lmsg").textContent = "Connecting\u2026";
     const r = await A("/api/fs/connect", { method: "POST", headers: JSON_H,
       body: JSON.stringify({ user, private_key: key, passphrase: pass }) });
     ui.clearPassphrase();
-    if (!r.ok) { q("lmsg").textContent = await errText(r); return; }
+    if (!r.ok) { await showConnectError(r); return; }
     ui.clear();
     const d = await r.json();
     q("lmsg").textContent = "";

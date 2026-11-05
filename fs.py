@@ -245,6 +245,11 @@ def connect(body: ConnectBody, request: Request, panel_user: str = Depends(curre
 
 def sign_in(body, request, panel_user, token, pw):
     ip = request.client.host
+    streak = loginlock.key(ip, panel_user)
+    left = loginlock.wait_left(streak)
+    if left:                                # three wrong passwords in a row: the form makes you wait
+        raise HTTPException(429, f"Too many wrong passwords. Wait {left} seconds before trying again.",
+                            headers={"Retry-After": str(left)})
     pkey = load_pkey(body.private_key, body.passphrase) if body.private_key else None
     # One attempt is counted BEFORE the password is tried (and given back if it succeeds), so a
     # burst of simultaneous guesses cannot all pass the check, and a success never wipes the
@@ -255,8 +260,18 @@ def sign_in(body, request, panel_user, token, pw):
         raise HTTPException(429, "Too many failed attempts. Try again in a few minutes.")
 
     def rejected(msg):                      # the reservation stays: it is the failure
+        tries, wait = loginlock.note_wrong(streak)
         audit(panel_user, ip, "fs_connect", target=body.user, ok=False)
-        raise HTTPException(401, msg)
+        headers = {}
+        if not msg.endswith("."):
+            msg += "."
+        if wait:
+            msg += f" Wait {wait} seconds before trying again."
+            headers["Retry-After"] = str(wait)
+        elif tries:
+            msg += f" {tries} {'try' if tries == 1 else 'tries'} left."
+        # 403, not 401: a 401 means "your panel session has ended" and sends the browser to the main login page
+        raise HTTPException(403, msg, headers=headers)
 
     if pw is None:
         rejected("Wrong user name or password")
@@ -280,6 +295,7 @@ def sign_in(body, request, panel_user, token, pw):
         raise HTTPException(502, "The SSH server isn't reachable on this machine")
 
     loginlock.refund(budgets)               # success: this attempt is not a failure
+    loginlock.note_right(streak)
     client.get_transport().set_keepalive(30)
     c = Conn(client, body.user, pw.pw_dir, token)
     with plock:

@@ -77,3 +77,47 @@ def refund(budgets):
 def clear(k):
     with _lock:
         fails.pop(k, None)
+
+
+# ---- short wait after a few wrong passwords in a row (File manager sign-in form) ----
+# This is only about how the form behaves: after TRIES wrong passwords in a row the form makes you
+# wait WAIT seconds. The long-term limits above (5 per address and 10 per account in 5 minutes) still
+# apply on top of it, so a success here never gives anyone more guesses than those limits allow.
+TRIES, WAIT = 3, 30
+_streak = {}                # key -> [wrong in a row, wait until (unix time), last change]
+_streak_lock = threading.Lock()
+
+
+def wait_left(k):
+    """Whole seconds still to wait before this key may try again (0 = may try now)."""
+    with _streak_lock:
+        rec = _streak.get(k)
+        if not rec or rec[1] <= 0:
+            return 0
+        left = rec[1] - time.time()
+        if left <= 0:
+            _streak.pop(k, None)            # the wait is over: three fresh tries
+            return 0
+        return int(left) + (left > int(left))
+
+
+def note_wrong(k):
+    """Counts one wrong password. Returns (tries left, seconds to wait); the wait starts after the third."""
+    now = time.time()
+    with _streak_lock:
+        for old in [x for x, r in _streak.items() if now - r[2] > WINDOW]:
+            del _streak[old]                # forget old entries so the table cannot grow
+        rec = _streak.setdefault(k, [0, 0.0, now])
+        if rec[1] and now >= rec[1]:
+            rec[0], rec[1] = 0, 0.0
+        rec[0] += 1
+        rec[2] = now
+        if rec[0] >= TRIES:
+            rec[1] = now + WAIT
+            return 0, WAIT
+        return TRIES - rec[0], 0
+
+
+def note_right(k):
+    with _streak_lock:
+        _streak.pop(k, None)

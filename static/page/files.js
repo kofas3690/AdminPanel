@@ -83,13 +83,41 @@ function showLogin(msg, canCancel) {
   ($("luser").value ? $("lpass") : $("luser")).focus();
 }
 
+/* After three wrong passwords the server makes you wait. The Connect button counts the seconds down. */
+let waitTimer = null, waitLeft = 0;
+function startWait(seconds) {
+  const btn = document.querySelector("#lform button.primary");
+  const label = btn.dataset.label || btn.textContent;
+  btn.dataset.label = label;
+  clearInterval(waitTimer);
+  waitLeft = seconds;
+  const tick = () => {
+    if (waitLeft <= 0) {
+      clearInterval(waitTimer);
+      btn.disabled = false; btn.textContent = label; $("lmsg").textContent = "";
+      return;
+    }
+    btn.disabled = true; btn.textContent = "Wait " + waitLeft + " s";
+    waitLeft--;
+  };
+  tick();
+  waitTimer = setInterval(tick, 1000);
+}
+/* Shows why a connect attempt failed (the server's own words, including how many tries are left). */
+async function showConnectError(r) {
+  $("lmsg").textContent = await errText(r);
+  const wait = parseInt(r.headers.get("Retry-After") || "0", 10);
+  if (wait > 0) startWait(wait);
+}
+
 $("lform").addEventListener("submit", async (e) => {
   e.preventDefault();
+  if (waitLeft > 0) return;
   const user = $("luser").value.trim(), password = $("lpass").value;
   $("lmsg").textContent = "Connecting\u2026";
   const r = await A("/api/fs/connect", { method: "POST", headers: JSON_H, body: JSON.stringify({ user, password }) });
   $("lpass").value = "";
-  if (!r.ok) { $("lmsg").textContent = await errText(r); return; }
+  if (!r.ok) { await showConnectError(r); return; }
   const d = await r.json();
   $("lmsg").textContent = "";
   await enter(d.user, d.home);
