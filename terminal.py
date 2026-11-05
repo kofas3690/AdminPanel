@@ -1,4 +1,4 @@
-import asyncio, fcntl, json, os, pty, pwd, re, struct, termios, time
+import asyncio, fcntl, json, os, pty, pwd, re, shutil, struct, tempfile, termios, time
 from pathlib import Path
 from fastapi import APIRouter, WebSocket
 import loginlock
@@ -87,20 +87,20 @@ async def write_all(fd, data):
             await asyncio.sleep(0.01)
 
 
-def ssh_args(u, keyfd=None):
+def ssh_args(u, keyfile=None):
     args = ["-tt", "-e", "none", "-F", "/dev/null",
             "-o", "StrictHostKeyChecking=yes",
             "-o", f"UserKnownHostsFile={KNOWN_HOSTS}",
             "-o", "GlobalKnownHostsFile=/dev/null",
             "-o", "HostKeyAlgorithms=ssh-ed25519"]
-    if keyfd is None:
+    if keyfile is None:
         args += ["-o", "PubkeyAuthentication=no",
                  "-o", "PreferredAuthentications=password,keyboard-interactive"]
     else:
         args += ["-o", "PubkeyAuthentication=yes",
                  "-o", "PreferredAuthentications=publickey",
                  "-o", "IdentitiesOnly=yes",
-                 "-o", f"IdentityFile=/dev/fd/{keyfd}"]
+                 "-o", f"IdentityFile={keyfile}"]
     args += ["-o", "ConnectTimeout=10",
              "-o", "NumberOfPasswordPrompts=3",
              "-o", "ServerAliveInterval=30",
@@ -110,9 +110,27 @@ def ssh_args(u, keyfd=None):
     return args
 
 
+KEY_LIFETIME = 30         # seconds the key file may exist; ssh reads it within a moment of starting
+
+
+def key_dir_base():
+    """RAM-backed folder if there is one, so the key is never written to a disk."""
+    shm = "/dev/shm"
+    return shm if os.path.isdir(shm) and os.access(shm, os.W_OK | os.X_OK) else None
+
+
+def drop_key(keyfile):
+    """Removes the key file and its private folder (safe to call twice)."""
+    if keyfile is not None:
+        shutil.rmtree(os.path.dirname(keyfile), ignore_errors=True)
+
+
 async def read_key(ws):
     """Waits for the browser's first message, which carries the private key, and
-    puts it in an anonymous in-memory file (it never touches the disk)."""
+    puts it in a file that only the panel can read (0600, in its own 0700 folder in
+    RAM). ssh cannot be handed an open file: it closes every file it did not open
+    itself when it starts. The file is deleted a few seconds later, or when the
+    session ends, whichever comes first."""
     msg = await asyncio.wait_for(ws.receive(), KEY_WAIT)
     if msg.get("type") != "websocket.receive" or msg.get("text") is None:
         raise ValueError("the key was not received")
@@ -123,14 +141,18 @@ async def read_key(ws):
     if not isinstance(data, dict) or data.get("type") != "key":
         raise ValueError("the key message was not understood")
     text = normalize_key(data.get("key"))
-    fd = os.memfd_create("panelkey", os.MFD_CLOEXEC)
+    folder = tempfile.mkdtemp(prefix="apkey-", dir=key_dir_base())      # mode 0700
+    path = os.path.join(folder, "id")
     try:
-        os.write(fd, text.encode("ascii"))
-        os.fchmod(fd, 0o600)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, text.encode("ascii"))
+        finally:
+            os.close(fd)
     except Exception:
-        os.close(fd)
+        shutil.rmtree(folder, ignore_errors=True)
         raise
-    return fd
+    return path
 
 
 @router.websocket("/api/terminal/ws")
@@ -182,7 +204,8 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24, a
     started = last_input = time.time()
     loop = asyncio.get_running_loop()
     queue = asyncio.Queue()
-    master = slave = keyfd = -1
+    master = slave = -1
+    keyfile = None
     reading = False
     proc = None
     tasks = []
@@ -258,7 +281,7 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24, a
     try:
         if auth == "key":
             try:
-                keyfd = await read_key(ws)
+                keyfile = await read_key(ws)
             except (ValueError, asyncio.TimeoutError) as e:
                 msg = str(e) or "no key was received in time"
                 try:
@@ -270,15 +293,13 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24, a
         os.set_blocking(master, False)
         set_size(master, clamp(rows), clamp(cols))
         proc = await asyncio.create_subprocess_exec(
-            SETSID, "--ctty", SSH, *ssh_args(u, keyfd if keyfd != -1 else None),
+            SETSID, "--ctty", SSH, *ssh_args(u, keyfile),
             stdin=slave, stdout=slave, stderr=slave, env=ENV,
-            pass_fds=(keyfd,) if keyfd != -1 else (),
         )
         os.close(slave)
         slave = -1
-        if keyfd != -1:          # the ssh process has its own copy now
-            os.close(keyfd)
-            keyfd = -1
+        if keyfile is not None:  # ssh reads the key as it starts; do not leave it lying around
+            loop.call_later(KEY_LIFETIME, drop_key, keyfile)
         audit(user, ws.client.host, "terminal_open", target=u, method=auth)
         start_reading()
         tasks = [asyncio.create_task(c()) for c in (pump_out, pump_in, watchdog)]
@@ -297,9 +318,10 @@ async def terminal(ws: WebSocket, u: str = "", cols: int = 80, rows: int = 24, a
                 await proc.wait()
             except ProcessLookupError:
                 pass
-        for fd in (master, slave, keyfd):
+        for fd in (master, slave):
             if fd != -1:
                 os.close(fd)
+        drop_key(keyfile)
         release()
         if proc is not None:
             audit(user, ws.client.host, "terminal_close", target=u,
