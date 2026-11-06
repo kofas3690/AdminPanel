@@ -1,51 +1,39 @@
-import subprocess
 from fastapi import APIRouter, Depends, HTTPException, Request
 from auth import current_user
 from audit import audit
+import actions
+import remote
 
 router = APIRouter(prefix="/api/services")
-SYSTEMCTL = "/usr/bin/systemctl"
 
-ALLOWED = {
-    "nginx": ["start", "stop", "restart"],
-    "cron": ["start", "stop", "restart"],
-    "ssh": ["restart"],
-}
-
-
-def run(args):
-    return subprocess.run(args, capture_output=True, text=True, timeout=30)
+# Kept for the code and tests that still import them from here.
+ALLOWED = actions.ALLOWED
 
 
 @router.get("")
-def list_services(user: str = Depends(current_user)):
-    result = []
-    for name, actions in ALLOWED.items():
-        r = run([SYSTEMCTL, "show", f"{name}.service",
-                 "--property=LoadState,ActiveState,SubState,Description"])
-        props = dict(l.split("=", 1) for l in r.stdout.splitlines() if "=" in l)
-        if props.get("LoadState") == "not-found":
-            result.append({"name": name, "state": "not installed",
-                           "description": "", "actions": []})
-        else:
-            result.append({
-                "name": name,
-                "state": f'{props.get("ActiveState")}/{props.get("SubState")}',
-                "description": props.get("Description", ""),
-                "actions": actions,
-            })
-    return result
+def list_services(host: str = "local", user: str = Depends(current_user)):
+    if host == "local":
+        return actions.list_services()
+    try:
+        return remote.call(host, "services.list")
+    except remote.RemoteError as e:
+        raise HTTPException(e.status, e.message)
 
 
 @router.post("/{name}/{action}")
-def act(name: str, action: str, request: Request,
+def act(name: str, action: str, request: Request, host: str = "local",
         user: str = Depends(current_user)):
-    if action not in ALLOWED.get(name, []):
-        audit(user, request.client.host, "service_denied", service=name, action=action)
-        raise HTTPException(403, "Not allowed")
-    r = run(["sudo", "-n", SYSTEMCTL, action, name])
-    audit(user, request.client.host, "service_action",
-          service=name, action=action, ok=(r.returncode == 0))
-    if r.returncode != 0:
-        raise HTTPException(500, r.stderr.strip() or "Command failed")
+    where = {} if host == "local" else {"host": host}
+    try:
+        if host == "local":
+            actions.act_service(name, action)
+        else:
+            remote.call(host, "services.act", {"name": name, "action": action})
+    except (actions.ActionError, remote.RemoteError) as e:
+        if e.status == 403:
+            audit(user, request.client.host, "service_denied", service=name, action=action, **where)
+        else:
+            audit(user, request.client.host, "service_action", service=name, action=action, ok=False, **where)
+        raise HTTPException(e.status, e.message)
+    audit(user, request.client.host, "service_action", service=name, action=action, ok=True, **where)
     return {"ok": True}
