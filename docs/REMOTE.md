@@ -1,6 +1,6 @@
 # Remote servers: the bridge (work in progress)
 
-From 1.0.5 the panel has the foundation for managing other machines, and from 1.0.6 you can set a machine up with `adminpanel-setup`. The pages do not have a host selector yet (that is the next release), so for now you can list machines, check them, and call the Services routes with `?host=<id>`.
+From 1.0.5 the panel has the foundation for managing other machines, from 1.0.6 you can set a machine up with `adminpanel-setup`, and from 1.0.7 the **Remote services** page (in the sidebar) lets you pick a listed machine and start, stop or restart its allowed services. Other pages still work on this machine only.
 
 ## The idea (the same one Cockpit uses)
 

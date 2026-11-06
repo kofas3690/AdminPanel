@@ -11,6 +11,7 @@ from fs import router as fs_router
 from system import router as system_router
 from units import router as units_router
 from services import router as services_router
+from remote import router as remote_router
 from logs import router as logs_router
 from updates import router as updates_router
 from firewall import router as firewall_router
@@ -40,6 +41,7 @@ app.include_router(fs_router)
 app.include_router(system_router)
 app.include_router(units_router)
 app.include_router(services_router)
+app.include_router(remote_router)
 app.include_router(logs_router)
 app.include_router(updates_router)
 app.include_router(firewall_router)

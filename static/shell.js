@@ -1,7 +1,7 @@
 (function () {
   "use strict";
   const NAV = [
-    ["System", [["Overview", "/"], ["Servers", "/fleet.html"], ["Services", "/units.html"], ["Storage", "/storage.html"],
+    ["System", [["Overview", "/"], ["Servers", "/fleet.html"], ["Remote services", "/remote.html"], ["Services", "/units.html"], ["Storage", "/storage.html"],
                 ["Networking", "/network.html"], ["VPN", "/vpn.html"], ["Proxy", "/proxy.html"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html"]]],
     ["Tools", [["Software updates", "/updates.html"], ["File manager", "/files.html"],
                ["Terminal", "/terminal.html"]]],

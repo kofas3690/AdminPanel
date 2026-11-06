@@ -8,8 +8,12 @@ import json, os, re, threading
 from pathlib import Path
 
 import paramiko
+from fastapi import APIRouter, Depends
 
+from auth import current_user
 from store import PersistentDict
+
+router = APIRouter(prefix="/api/remote")
 
 hosts = PersistentDict("remote_hosts")                   # id -> {name, address, port, user, key}
 REMOTE_KNOWN_HOSTS = Path(os.environ.get("ADMINPANEL_STATE", "/var/lib/adminpanel")) / "remote_known_hosts"
@@ -125,3 +129,10 @@ def remove_host(name):
 def list_hosts():
     return sorted(((hid, rec["name"], rec["address"], rec.get("port", 22)) for hid, rec in hosts.items()),
                   key=lambda r: r[1].lower())
+
+
+@router.get("/hosts")
+def api_hosts(user: str = Depends(current_user)):
+    """The listed machines, for the Remote services page. Only the id, name and address."""
+    return [{"id": hid, "name": name, "address": addr, "port": port}
+            for hid, name, addr, port in list_hosts()]
