@@ -1,6 +1,19 @@
 const $ = (id) => document.getElementById(id);
 let hosts = [];
 let busy = false;
+let logOf = null;                                  // service whose log is open
+
+const fmtBytes = (n) => {
+  if (typeof n !== "number") return "?";
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + " " + u[i];
+};
+const fmtUp = (s) => {
+  if (typeof s !== "number") return "?";
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return (d ? d + " d " : "") + (h || d ? h + " h " : "") + m + " min";
+};
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -31,7 +44,53 @@ async function loadHosts() {
   $("empty").hidden = hosts.length > 0;
   $("tbl").hidden = hosts.length === 0;
   $("host").disabled = $("reload").disabled = hosts.length === 0;
-  if (hosts.length) loadServices();
+  if (hosts.length) { loadInfo(); loadServices(); }
+  else { $("info").hidden = true; closeLog(); }
+}
+
+async function loadInfo() {
+  const h = current();
+  const box = $("info");
+  box.hidden = true;
+  if (!h) return;
+  let r;
+  try { r = await api("/api/remote/info?host=" + encodeURIComponent(h.id)); } catch (e) { return; }
+  if (current() !== h || !r.ok) return;             // the services request below shows the error
+  const d = await r.json();
+  const used = typeof d.mem_total === "number" && typeof d.mem_available === "number" ? d.mem_total - d.mem_available : null;
+  const items = [
+    ["Name", d.hostname], ["System", d.os], ["Kernel", d.kernel], ["Up", fmtUp(d.uptime)],
+    ["Load", (d.load || []).join(", ") + (d.cpus ? "  (" + d.cpus + " CPUs)" : "")],
+    ["Memory", fmtBytes(used) + " of " + fmtBytes(d.mem_total)],
+    ["Disk (/)", fmtBytes(d.disk_used) + " of " + fmtBytes(d.disk_total)],
+  ];
+  box.replaceChildren();
+  for (const [k, v] of items) {
+    const div = document.createElement("div");
+    const b = document.createElement("b"); b.textContent = k;
+    div.appendChild(b); div.appendChild(document.createTextNode(String(v == null ? "?" : v)));
+    box.appendChild(div);
+  }
+  box.hidden = false;
+}
+
+function closeLog() { logOf = null; $("logbox").hidden = true; $("logtext").textContent = ""; }
+
+async function openLog(h, name) {
+  logOf = { host: h.id, name };
+  $("logtitle").textContent = "Log of " + name + " on " + h.name;
+  $("logbox").hidden = false;
+  $("logtext").textContent = "Loading…";
+  let r;
+  try {
+    r = await api("/api/remote/logs?host=" + encodeURIComponent(h.id) + "&name=" + encodeURIComponent(name) +
+                  "&lines=" + encodeURIComponent($("loglines").value));
+  } catch (e) { return; }
+  if (!logOf || logOf.host !== h.id || logOf.name !== name) return;   // another log was opened meanwhile
+  if (!r.ok) { $("logtext").textContent = await errText(r); return; }
+  const j = await r.json();
+  $("logtext").textContent = j.text || "(the journal has nothing for this service)";
+  $("logtext").scrollTop = $("logtext").scrollHeight;
 }
 
 async function loadServices(quiet) {
@@ -58,6 +117,12 @@ async function loadServices(quiet) {
       b.addEventListener("click", () => act(h, s.name, a));
       td.appendChild(b);
     }
+    if (s.state !== "not installed") {
+      const lb = document.createElement("button");
+      lb.textContent = "log";
+      lb.addEventListener("click", () => openLog(h, s.name));
+      td.appendChild(lb);
+    }
     tr.appendChild(td);
     $("svc").appendChild(tr);
   }
@@ -80,7 +145,11 @@ async function act(h, name, action) {
 
 $("host").addEventListener("change", () => {
   try { sessionStorage.setItem("remoteHost", $("host").value); } catch (e) {}
+  closeLog();
+  loadInfo();
   loadServices();
 });
-$("reload").addEventListener("click", () => loadServices());
+$("reload").addEventListener("click", () => { loadInfo(); loadServices(); });
+$("logreload").addEventListener("click", () => { const h = current(); if (logOf && h) openLog(h, logOf.name); });
+$("logclose").addEventListener("click", closeLog);
 loadHosts();

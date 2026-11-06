@@ -10,6 +10,11 @@
   #msg { margin: 8px 2px; min-height: 1.4em; }
   #msg.bad { color: var(--crit); }
   td.act button { margin-right: 6px; }
+  #info { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px 18px; margin: 10px 0 16px; }
+  #info div { min-width: 0; }
+  #info b { display: block; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  #logbox { margin-top: 16px; }
+  #logtext { max-height: 420px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
 </style>
 
 <h1>Remote services</h1>
@@ -23,10 +28,23 @@
 </div>
 <div id="msg" class="muted" role="status"></div>
 
+<div id="info" hidden></div>
+
 <table id="tbl" hidden>
   <thead><tr><th>Name</th><th>State</th><th>Description</th><th>Actions</th></tr></thead>
   <tbody id="svc"></tbody>
 </table>
+
+<div id="logbox" hidden>
+  <div class="row">
+    <b id="logtitle"></b>
+    <label for="loglines">Lines</label>
+    <select id="loglines"><option>50</option><option selected>100</option><option>200</option><option>500</option></select>
+    <button id="logreload">Reload</button>
+    <button id="logclose">Close</button>
+  </div>
+  <pre id="logtext"></pre>
+</div>
 
 <div id="empty" hidden>
   <p>No other machines are listed yet. To add one:</p>

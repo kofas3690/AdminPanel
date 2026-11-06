@@ -1,6 +1,6 @@
 # Remote servers: the bridge (work in progress)
 
-From 1.0.5 the panel has the foundation for managing other machines, from 1.0.6 you can set a machine up with `adminpanel-setup`, and from 1.0.7 the **Remote services** page (in the sidebar) lets you pick a listed machine and start, stop or restart its allowed services. Other pages still work on this machine only.
+From 1.0.5 the panel has the foundation for managing other machines, from 1.0.6 you can set a machine up with `adminpanel-setup`, from 1.0.7 the **Remote services** page (in the sidebar) lets you pick a listed machine and start, stop or restart its allowed services, and from 1.0.8 that page also shows the machine's basic facts and the recent log of each service. Other pages still work on this machine only.
 
 ## The idea (the same one Cockpit uses)
 
@@ -13,7 +13,7 @@ Central panel --SSH, pinned host key--> adminpanel-bridge (on the other machine)
 
 ## Set up a machine (3 commands)
 
-Install the adminpanel package (1.0.5 or later) on both machines. The other machine does not need to run the panel's web page; it only needs the package files and an SSH server.
+Install the adminpanel package (1.0.8 is best; a machine on 1.0.5 to 1.0.7 works for services but cannot show facts or logs) on both machines. The other machine does not need to run the panel's web page; it only needs the package files and an SSH server.
 
 1. **On the central panel**, create (or show) its key for other machines:
 
@@ -46,7 +46,7 @@ Other commands: `adminpanel-setup list-hosts`, `adminpanel-setup remove-host NAM
 | File | What it does |
 | --- | --- |
 | `actions.py` | The checks and commands behind the Services page. Standard library only, so both the panel and the bridge use the same code. |
-| `bridge.py` | Reads requests on standard input. Operations: `ping`, `services.list`, `services.act`. Unknown operations, extra arguments, bad JSON and lines over 64 KB are refused. It never runs anything that came from the request. |
+| `bridge.py` | Reads requests on standard input. Operations: `ping`, `services.list`, `services.act`, `system.info` (hostname, system, kernel, uptime, load, memory, disk) and `logs.tail` (the last 1 to 500 journal lines of one allowed service only). Unknown operations, extra arguments, bad JSON and lines over 64 KB are refused. It never runs anything that came from the request. |
 | `remote.py` | The panel's side: one short SSH connection per request; the host key is checked against `/var/lib/adminpanel/remote_known_hosts` and the key is read from `/var/lib/adminpanel/remote_key`, both owned by root so the panel can read but not change them; the answer is limited to 1 MB. It also keeps the list of machines (at most 50). |
 | `services.py` | Accepts `?host=<id>` on its two routes. Without it, it behaves exactly as before. |
 
@@ -56,6 +56,10 @@ Other commands: `adminpanel-setup list-hosts`, `adminpanel-setup remove-host NAM
 echo '{"id":1,"op":"ping"}' | python3 /opt/adminpanel/bridge.py
 echo '{"id":3,"op":"rm"}' | python3 /opt/adminpanel/bridge.py        # refused: unknown operation
 ```
+
+## Reading logs (1.0.8)
+
+`remote-enable` now also adds the `adminpanel-remote` user to the `systemd-journal` group, the same as the panel's own account, so the bridge can read the journal. This lets the user read the whole journal of that machine, but the bridge only returns the log of the three allowed services (nginx, cron, ssh), at most 500 lines (200 KB). **A machine you already set up needs `sudo adminpanel-setup remote-enable '...'` run once more** (the same command; it is safe to repeat) to get the group. Until then the log button shows "Could not read the journal on that machine". Reading a log is written to the audit log as `remote_logs_read`.
 
 ## Safety rules
 

@@ -8,9 +8,10 @@ import json, os, re, threading
 from pathlib import Path
 
 import paramiko
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from auth import current_user
+from audit import audit
 from store import PersistentDict
 
 router = APIRouter(prefix="/api/remote")
@@ -136,3 +137,24 @@ def api_hosts(user: str = Depends(current_user)):
     """The listed machines, for the Remote services page. Only the id, name and address."""
     return [{"id": hid, "name": name, "address": addr, "port": port}
             for hid, name, addr, port in list_hosts()]
+
+
+@router.get("/info")
+def api_info(host: str, user: str = Depends(current_user)):
+    try:
+        return call(host, "system.info")
+    except RemoteError as e:
+        raise HTTPException(e.status, e.message)
+
+
+@router.get("/logs")
+def api_logs(host: str, name: str, request: Request, lines: int = 100, user: str = Depends(current_user)):
+    """The last lines of the journal of one allowed service on a listed machine."""
+    try:
+        text = call(host, "logs.tail", {"name": name, "lines": lines})
+    except RemoteError as e:
+        raise HTTPException(e.status, e.message)
+    if not isinstance(text, str):
+        raise HTTPException(502, "No usable answer from that server")
+    audit(user, request.client.host, "remote_logs_read", host=host, service=name, lines=lines)
+    return {"text": text}

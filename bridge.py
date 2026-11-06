@@ -38,10 +38,20 @@ def op_services_act(args):
     return True
 
 
+def op_system_info(args):
+    return actions.system_info()
+
+
+def op_logs_tail(args):
+    return actions.service_logs(args.get("name"), args.get("lines", 100))
+
+
 OPS = {                                  # operation -> (function, the argument names it accepts)
     "ping": (op_ping, ()),
     "services.list": (op_services_list, ()),
     "services.act": (op_services_act, ("name", "action")),
+    "system.info": (op_system_info, ()),
+    "logs.tail": (op_logs_tail, ("name", "lines")),
 }
 
 

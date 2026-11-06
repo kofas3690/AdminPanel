@@ -274,6 +274,8 @@ step_remote_enable() {
         useradd --system --create-home --home-dir "$home" --shell /bin/sh --comment "AdminPanel remote bridge" "$REMOTE_USER"
     fi
     usermod -p '*' "$REMOTE_USER"                          # no password; the key is the only way in
+    # Reading service logs (the bridge's logs.tail) needs the journal, like the panel's own account.
+    if getent group systemd-journal >/dev/null 2>&1; then usermod -aG systemd-journal "$REMOTE_USER"; fi
     install -d -m 700 -o "$REMOTE_USER" -g "$REMOTE_USER" "$home/.ssh"
     chmod 755 "$home"
     # The key may run the bridge and nothing else ("restrict" turns off shells, forwarding and agents).
