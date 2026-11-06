@@ -7,6 +7,12 @@
 #   sudo adminpanel-setup ssh-restrict GROUP|off   limit that password sign-in to members of GROUP (off: everyone)
 #   sudo adminpanel-setup user                     create or reset a panel administrator
 #   sudo adminpanel-setup 2fa                      set up two-step verification
+#   sudo adminpanel-setup remote-key               show this panel's key for managing other machines
+#   sudo adminpanel-setup remote-enable 'KEY'      (on the OTHER machine) let that key run the bridge, nothing else
+#   sudo adminpanel-setup remote-disable           (on the OTHER machine) undo remote-enable
+#   sudo adminpanel-setup add-host NAME ADDRESS [PORT] [--fingerprint SHA256:...]   list another machine
+#   sudo adminpanel-setup remove-host NAME         remove a machine from the list
+#   sudo adminpanel-setup list-hosts               show the listed machines
 set -euo pipefail
 
 APP=/opt/adminpanel
@@ -232,6 +238,157 @@ finish() {
     echo "  (the certificate is self-signed, so the browser shows a warning the first time)"
 }
 
+# ---------------------------------------------------------------- managing other machines
+REMOTE_USER=adminpanel-remote
+REMOTE_KEY="$STATE/remote_key"
+REMOTE_KNOWN="$STATE/remote_known_hosts"
+
+remote_key_make() {
+    command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen is missing (sudo apt install openssh-client)"
+    install -d -m 755 "$STATE"
+    if [ ! -f "$REMOTE_KEY" ]; then
+        ssh-keygen -q -t ed25519 -N "" -C adminpanel-central -f "$REMOTE_KEY"
+    fi
+    # Root owns the key; the panel (group adminpanel) can read it but not replace it.
+    chown root:adminpanel "$REMOTE_KEY"; chmod 640 "$REMOTE_KEY"
+    chown root:root "$REMOTE_KEY.pub"; chmod 644 "$REMOTE_KEY.pub"
+}
+
+step_remote_key() {
+    say "This panel's key for managing other machines"
+    remote_key_make
+    echo "On each machine you want to manage, install the panel there first, then run:"
+    echo
+    echo "  sudo adminpanel-setup remote-enable '$(cat "$REMOTE_KEY.pub")'"
+}
+
+step_remote_enable() {
+    local key="${1:-}" home="/var/lib/adminpanel-remote" tmp fp eff
+    say "Letting a central panel manage this machine (bridge only)"
+    [[ "$key" =~ ^ssh-ed25519\ [A-Za-z0-9+/]+=*(\ [A-Za-z0-9._@-]+)?$ ]] \
+        || die "usage: adminpanel-setup remote-enable 'ssh-ed25519 AAAA... adminpanel-central'   (the line printed by: adminpanel-setup remote-key)"
+    [ -f "$APP/bridge.py" ] || die "this machine has no $APP/bridge.py. Install adminpanel 1.0.5 or later first."
+    [ -x /usr/bin/python3 ] || die "/usr/bin/python3 is missing"
+    [ -f /etc/sudoers.d/adminpanel ] || die "/etc/sudoers.d/adminpanel is missing. Reinstall the adminpanel package."
+    if ! id "$REMOTE_USER" >/dev/null 2>&1; then
+        useradd --system --create-home --home-dir "$home" --shell /bin/sh --comment "AdminPanel remote bridge" "$REMOTE_USER"
+    fi
+    usermod -p '*' "$REMOTE_USER"                          # no password; the key is the only way in
+    install -d -m 700 -o "$REMOTE_USER" -g "$REMOTE_USER" "$home/.ssh"
+    chmod 755 "$home"
+    # The key may run the bridge and nothing else ("restrict" turns off shells, forwarding and agents).
+    printf 'command="/usr/bin/python3 %s/bridge.py",restrict %s\n' "$APP" "$key" > "$home/.ssh/authorized_keys"
+    chown "$REMOTE_USER:$REMOTE_USER" "$home/.ssh/authorized_keys"; chmod 600 "$home/.ssh/authorized_keys"
+    # The same sudo rules the panel itself has, for this user (one source of truth).
+    tmp=$(mktemp)
+    sed -e 's/PANEL_SVC/REMOTE_SVC/g' -e "s/^adminpanel ALL/$REMOTE_USER ALL/" /etc/sudoers.d/adminpanel > "$tmp"
+    if ! visudo -cf "$tmp" >/dev/null 2>&1; then rm -f "$tmp"; die "the generated sudo rule is invalid. Nothing was installed."; fi
+    install -m 0440 -o root -g root "$tmp" "/etc/sudoers.d/$REMOTE_USER"; rm -f "$tmp"
+    if command -v /usr/sbin/sshd >/dev/null 2>&1; then
+        eff=$(/usr/sbin/sshd -T -C "user=$REMOTE_USER,host=localhost,addr=127.0.0.1,laddr=127.0.0.1,lport=22" 2>/dev/null || true)
+        printf '%s\n' "$eff" | grep -qi '^pubkeyauthentication no' && warn "SSH public-key sign-in is switched off on this machine"
+        printf '%s\n' "$eff" | grep -qiE '^(allowusers|allowgroups) ' && warn "SSH has an AllowUsers or AllowGroups rule. Make sure $REMOTE_USER is allowed"
+    else
+        warn "no SSH server is installed (sudo apt install openssh-server)"
+    fi
+    echo "done. The central panel can now run only the bridge here, as user $REMOTE_USER."
+    echo
+    echo "This machine's SSH host key, to compare when you add it on the central panel:"
+    for f in /etc/ssh/ssh_host_ed25519_key.pub; do
+        [ -f "$f" ] && ssh-keygen -lf "$f"
+    done
+    echo
+    echo "On the central panel run:  sudo adminpanel-setup add-host NAME THIS-MACHINE-ADDRESS"
+}
+
+step_remote_disable() {
+    say "Removing the central panel's access to this machine"
+    rm -f "/etc/sudoers.d/$REMOTE_USER"
+    if id "$REMOTE_USER" >/dev/null 2>&1; then userdel -r "$REMOTE_USER" 2>/dev/null || userdel "$REMOTE_USER"; fi
+    echo "done"
+}
+
+panel_py() { ( cd "$APP" && ADMINPANEL_STATE="$STATE" runuser -u adminpanel -- "$PY" -c "$@" ); }
+
+step_add_host() {
+    local name="${1:-}" addr="${2:-}" port=22 want="" scan fp hid out tmp spec
+    [ $# -ge 2 ] || die "usage: adminpanel-setup add-host NAME ADDRESS [PORT] [--fingerprint SHA256:...]"
+    shift 2
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --fingerprint) want="${2:-}"; shift 2 || die "--fingerprint needs a value" ;;
+            [0-9]*) port="$1"; shift ;;
+            *) die "unexpected argument: $1" ;;
+        esac
+    done
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$ ]] || die "the name may use letters, digits, dot, dash and underscore (up to 40 characters)"
+    [[ "$addr" =~ ^[A-Za-z0-9._:-]{1,253}$ && "$addr" != -* && "$addr" != .* ]] || die "that is not a valid address"
+    [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "the port must be a number from 1 to 65535"
+    command -v ssh-keyscan >/dev/null 2>&1 || die "ssh-keyscan is missing (sudo apt install openssh-client)"
+    say "Adding $name ($addr:$port)"
+    remote_key_make
+    scan=$(mktemp)
+    ssh-keyscan -T 6 -t ed25519 -p "$port" "$addr" 2>/dev/null | grep -v '^#' > "$scan" || true
+    [ -s "$scan" ] || { rm -f "$scan"; die "could not read an SSH host key from $addr port $port"; }
+    [ "$(wc -l < "$scan")" -eq 1 ] || { rm -f "$scan"; die "the server returned more than one host key; refusing"; }
+    fp=$(ssh-keygen -lf "$scan" | awk '{print $2}')
+    echo "That machine's SSH host key fingerprint is:"
+    echo "  $fp"
+    if [ -n "$want" ]; then
+        [ "$want" = "$fp" ] || { rm -f "$scan"; die "the fingerprint does not match the one you gave ($want). Nothing was changed."; }
+        echo "(matches the fingerprint you gave)"
+    else
+        [ -t 0 ] || { rm -f "$scan"; die "no terminal to ask on. Compare the fingerprint, then run again with: --fingerprint $fp"; }
+        echo "Compare it with the output of 'remote-enable' on that machine."
+        read -r -p "Does it match? [y/N] " ans
+        [ "$ans" = y ] || [ "$ans" = Y ] || { rm -f "$scan"; die "not confirmed. Nothing was changed."; }
+    fi
+    # Pin the key in the root-owned file; the panel can read it but not change it.
+    install -d -m 755 "$STATE"; touch "$REMOTE_KNOWN"
+    spec="$addr"; [ "$port" != 22 ] && spec="[$addr]:$port"
+    ssh-keygen -R "$spec" -f "$REMOTE_KNOWN" >/dev/null 2>&1 || true
+    rm -f "$REMOTE_KNOWN.old"
+    cat "$scan" >> "$REMOTE_KNOWN"; rm -f "$scan"
+    chown root:adminpanel "$REMOTE_KNOWN"; chmod 640 "$REMOTE_KNOWN"
+    if ! hid=$(panel_py "import sys, remote
+try:
+    print(remote.add_host(sys.argv[1], sys.argv[2], int(sys.argv[3])))
+except ValueError as e:
+    sys.exit(str(e))" "$name" "$addr" "$port" 2>&1); then
+        die "$hid"
+    fi
+    echo "added (id $hid). Testing the connection..."
+    if out=$(panel_py "import sys, remote
+try:
+    r = remote.call(sys.argv[1], 'ping')
+    print('the bridge answered: version', r['version'])
+except remote.RemoteError as e:
+    sys.exit(e.message)" "$hid" 2>&1); then
+        echo "$out"
+    else
+        warn "added, but the test failed: $out"
+        echo "Check that 'sudo adminpanel-setup remote-enable ...' was run on $addr, and that port $port is reachable."
+    fi
+}
+
+step_remove_host() {
+    local name="${1:-}"
+    [ -n "$name" ] || die "usage: adminpanel-setup remove-host NAME"
+    panel_py "import sys, remote
+try:
+    remote.remove_host(sys.argv[1])
+except ValueError as e:
+    sys.exit(str(e))" "$name" || die "could not remove $name"
+    echo "removed $name from the list (its pinned host key stays in $REMOTE_KNOWN; the machine itself is not changed)"
+}
+
+step_list_hosts() {
+    panel_py "import remote
+rows = remote.list_hosts()
+if not rows: print('no machines listed')
+for hid, name, addr, port in rows: print(f'{hid}  {name:<20} {addr}:{port}')"
+}
+
 cmd="${1:-all}"; [ $# -gt 0 ] && shift || true
 case "$cmd" in
     all)
@@ -248,5 +405,11 @@ case "$cmd" in
     ssh-restrict) step_ssh_restrict "$@" ;;
     user)       step_user ;;
     2fa)        step_2fa ;;
-    *)          sed -n '2,10p' "$0"; exit 2 ;;
+    remote-key)     step_remote_key ;;
+    remote-enable)  step_remote_enable "$@" ;;
+    remote-disable) step_remote_disable ;;
+    add-host)       step_add_host "$@" ;;
+    remove-host)    step_remove_host "$@" ;;
+    list-hosts)     step_list_hosts ;;
+    *)          sed -n '2,16p' "$0"; exit 2 ;;
 esac

@@ -12,11 +12,16 @@ import paramiko
 from store import PersistentDict
 
 hosts = PersistentDict("remote_hosts")                   # id -> {name, address, port, user, key}
-REMOTE_KNOWN_HOSTS = Path("/var/lib/adminpanel/remote_known_hosts")
-KEY_DIR = Path(os.environ.get("ADMINPANEL_DATA", Path(__file__).parent))
+REMOTE_KNOWN_HOSTS = Path(os.environ.get("ADMINPANEL_STATE", "/var/lib/adminpanel")) / "remote_known_hosts"
+# The panel's private key for other machines lives in the root-owned state folder: the panel can
+# read it (group adminpanel) but cannot replace it. `adminpanel-setup remote-key` creates it.
+KEY_DIR = Path(os.environ.get("ADMINPANEL_STATE", "/var/lib/adminpanel"))
 MAX_ANSWER = 1024 * 1024
 TIMEOUT = 15
 HOST_ID = re.compile(r"^[0-9a-f]{8}$")
+NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
+ADDRESS_OK = re.compile(r"^[A-Za-z0-9._:-]{1,253}$")
+MAX_HOSTS = 50
 _lock = threading.Lock()
 
 
@@ -75,3 +80,48 @@ def call(host_id, op, args=None):
         raise RemoteError(st if st in (400, 403, 404, 413, 500) else 502,
                           str(ans.get("error", "failed"))[:200])
     return ans.get("result")
+
+
+# ------------------------------------------------------------------ the list of servers
+# These three are used by `adminpanel-setup add-host / remove-host / list-hosts`, which run them as
+# the panel's own account so the database keeps the right owner.
+def add_host(name, address, port=22, user="adminpanel-remote", key="remote_key"):
+    """Adds a server to the list and returns its id. Raises ValueError with a plain message."""
+    if not isinstance(name, str) or not NAME_OK.match(name):
+        raise ValueError("The name may use letters, digits, dot, dash and underscore (up to 40 characters)")
+    if not isinstance(address, str) or not ADDRESS_OK.match(address) or address.startswith(("-", ".")):
+        raise ValueError("That is not a valid address")
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        raise ValueError("The port must be a number from 1 to 65535")
+    with _lock:
+        items = hosts.items()
+        if len(items) >= MAX_HOSTS:
+            raise ValueError(f"At most {MAX_HOSTS} servers can be listed")
+        for _hid, rec in items:
+            if rec["name"].lower() == name.lower():
+                raise ValueError("A server with that name is already in the list")
+            if rec["address"].lower() == address.lower() and rec.get("port", 22) == port:
+                raise ValueError("That address is already in the list")
+        hid = os.urandom(4).hex()
+        hosts[hid] = {"name": name, "address": address, "port": port, "user": user, "key": key}
+    return hid
+
+
+def find_host(name):
+    for hid, rec in hosts.items():
+        if rec["name"].lower() == str(name).lower():
+            return hid
+    return None
+
+
+def remove_host(name):
+    hid = find_host(name)
+    if hid is None:
+        raise ValueError("No server with that name")
+    hosts.pop(hid, None)
+    return hid
+
+
+def list_hosts():
+    return sorted(((hid, rec["name"], rec["address"], rec.get("port", 22)) for hid, rec in hosts.items()),
+                  key=lambda r: r[1].lower())
