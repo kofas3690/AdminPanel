@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Servers</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .fp { font: 12px/1.5 var(--mono); word-break: break-all; }
+  td.act { white-space: nowrap; text-align: right; }
+  #addbox { border: 1px solid var(--line); border-radius: 8px; padding: 14px 18px; margin: 12px 0 22px; background: var(--panel); }
+  #addbox[hidden] { display: none; }
+  #found[hidden] { display: none; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0; }
+  #msg { margin: 8px 2px; min-height: 1.4em; }
+  #msg.bad { color: var(--crit); }
+</style>
+
+<h1>Servers</h1>
+<p class="muted">Other AdminPanel servers you manage. Each keeps its own administrators and settings;
+this page only shows whether it is up and which version it runs, and opens its panel in a new tab.</p>
+
+<table>
+  <thead><tr><th>Name</th><th>Address</th><th>Status</th><th>Version</th><th></th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<div id="msg" class="muted" role="status"></div>
+
+<div class="row"><button id="addbtn" class="primary">Add a server</button></div>
+
+<div id="addbox" hidden>
+  <h2 style="margin-top:0">Add a server</h2>
+  <form id="probe" class="row">
+    <input id="url" placeholder="https://192.168.1.20:8443/" maxlength="200" size="34" required>
+    <button id="probebtn">Look up</button>
+  </form>
+  <div id="found" hidden>
+    <p>Found an AdminPanel server, version <strong id="fver"></strong>. Its certificate fingerprint (SHA-256) is:</p>
+    <p class="fp" id="ffp"></p>
+    <p class="muted">Check that this matches the other server before you continue. On that server run:
+      <code>openssl x509 -in /etc/ssl/certs/adminpanel.crt -noout -fingerprint -sha256</code>.
+      If the certificate ever changes, this page will warn you.</p>
+    <form id="save" class="row">
+      <input id="name" placeholder="name, for example web1" maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9 ._\-]{0,39}" required>
+      <button class="primary">The fingerprint matches: add it</button>
+    </form>
+  </div>
+</div>
+
+<script src="/page/fleet.js"></script>
