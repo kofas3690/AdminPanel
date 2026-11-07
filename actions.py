@@ -39,6 +39,7 @@ def list_services():
             result.append({"name": name, "state": "not installed", "description": "", "actions": []})
         else:
             boot = props.get("UnitFileState", "")
+            has_boot_buttons = any(a in BOOT_ACTIONS for a in actions)
             if boot not in ("enabled", "disabled"):       # static, masked, alias... : leave the boot state alone
                 boot = boot or "unknown"
                 shown = [a for a in actions if a not in BOOT_ACTIONS]
@@ -48,7 +49,9 @@ def list_services():
                 "name": name,
                 "state": f'{props.get("ActiveState")}/{props.get("SubState")}',
                 "description": props.get("Description", ""),
-                "boot": boot,
+                # Not shown for ssh: on Ubuntu 24.04 it starts through ssh.socket, so the service itself
+                # reads "disabled" even though SSH comes up at boot. That would only worry people.
+                "boot": boot if has_boot_buttons else "",
                 "actions": shown,
             })
     return result
