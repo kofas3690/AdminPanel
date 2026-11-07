@@ -112,6 +112,12 @@ def add_host(name, address, port=22, user="adminpanel-remote", key="remote_key")
     return hid
 
 
+def host_label(hid):
+    """The name of a listed machine, for the audit log (the id alone says little later on)."""
+    rec = hosts.get(hid)
+    return rec["name"] if rec else None
+
+
 def find_host(name):
     for hid, rec in hosts.items():
         if rec["name"].lower() == str(name).lower():
@@ -156,5 +162,5 @@ def api_logs(host: str, name: str, request: Request, lines: int = 100, user: str
         raise HTTPException(e.status, e.message)
     if not isinstance(text, str):
         raise HTTPException(502, "No usable answer from that server")
-    audit(user, request.client.host, "remote_logs_read", host=host, service=name, lines=lines)
+    audit(user, request.client.host, "remote_logs_read", host=host, host_name=host_label(host), service=name, lines=lines)
     return {"text": text}

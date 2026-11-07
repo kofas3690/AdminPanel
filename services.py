@@ -23,7 +23,7 @@ def list_services(host: str = "local", user: str = Depends(current_user)):
 @router.post("/{name}/{action}")
 def act(name: str, action: str, request: Request, host: str = "local",
         user: str = Depends(current_user)):
-    where = {} if host == "local" else {"host": host}
+    where = {} if host == "local" else {"host": host, "host_name": remote.host_label(host)}
     try:
         if host == "local":
             actions.act_service(name, action)
