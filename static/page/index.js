@@ -114,7 +114,7 @@ async function loadServices() {
   body.replaceChildren();
   for (const s of rows) {
     const tr = document.createElement("tr");
-    for (const text of [s.name, s.state, s.description]) {
+    for (const text of [s.name, s.boot ? s.state + " \u00b7 boot: " + s.boot : s.state, s.description]) {
       const td = document.createElement("td");
       td.textContent = text;
       tr.appendChild(td);
@@ -122,7 +122,7 @@ async function loadServices() {
     const td = document.createElement("td");
     for (const a of s.actions) {
       const b = document.createElement("button");
-      b.textContent = a;
+      b.textContent = (a === "enable" || a === "disable") ? a + " at boot" : a;
       b.onclick = () => act(s.name, a);
       td.appendChild(b);
     }
@@ -138,7 +138,8 @@ async function loadServices() {
 }
 
 async function act(name, action) {
-  if (!confirm(`${action} ${name}?`)) return;
+  const boot = action === "enable" || action === "disable";
+  if (!confirm(boot ? `${action} ${name} at boot? (it is not started or stopped now)` : `${action} ${name}?`)) return;
   const r = await api(`/api/services/${name}/${action}`, { method: "POST" });
   if (!r.ok) { try { alert((await r.json()).detail); } catch (e) { alert("Request failed"); } }
   loadServices();

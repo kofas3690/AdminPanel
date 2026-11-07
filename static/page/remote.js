@@ -104,7 +104,7 @@ async function loadServices(quiet) {
   if (!quiet) say("");
   for (const s of await r.json()) {
     const tr = document.createElement("tr");
-    for (const text of [s.name, s.state, s.description]) {
+    for (const text of [s.name, s.boot ? s.state + " \u00b7 boot: " + s.boot : s.state, s.description]) {
       const td = document.createElement("td");
       td.textContent = text;
       tr.appendChild(td);
@@ -113,7 +113,7 @@ async function loadServices(quiet) {
     td.className = "act";
     for (const a of s.actions) {
       const b = document.createElement("button");
-      b.textContent = a;
+      b.textContent = (a === "enable" || a === "disable") ? a + " at boot" : a;
       b.addEventListener("click", () => act(h, s.name, a));
       td.appendChild(b);
     }
@@ -130,7 +130,9 @@ async function loadServices(quiet) {
 
 async function act(h, name, action) {
   if (busy) return;
-  if (!confirm(action + " " + name + " on " + h.name + "?")) return;
+  const boot = action === "enable" || action === "disable";
+  if (!confirm(boot ? action + " " + name + " at boot on " + h.name + "? (it is not started or stopped now)"
+                    : action + " " + name + " on " + h.name + "?")) return;
   busy = true;
   say("Running " + action + " " + name + " on " + h.name + "…");
   try {

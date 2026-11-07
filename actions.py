@@ -11,10 +11,12 @@ MAX_LOG_LINES = 500
 MAX_LOG_BYTES = 200 * 1024
 
 ALLOWED = {
-    "nginx": ["start", "stop", "restart"],
-    "cron": ["start", "stop", "restart"],
-    "ssh": ["restart"],
+    "nginx": ["start", "stop", "restart", "enable", "disable"],
+    "cron": ["start", "stop", "restart", "enable", "disable"],
+    "ssh": ["restart"],          # never enable/disable: a mistake here could lock you out of the machine
 }
+# "enable" / "disable" only change whether the service starts at boot. They never start or stop it now.
+BOOT_ACTIONS = ("enable", "disable")
 
 
 class ActionError(Exception):
@@ -31,27 +33,38 @@ def list_services():
     result = []
     for name, actions in ALLOWED.items():
         r = _run([SYSTEMCTL, "show", f"{name}.service",
-                  "--property=LoadState,ActiveState,SubState,Description"])
+                  "--property=LoadState,ActiveState,SubState,Description,UnitFileState"])
         props = dict(l.split("=", 1) for l in r.stdout.splitlines() if "=" in l)
         if props.get("LoadState") == "not-found":
             result.append({"name": name, "state": "not installed", "description": "", "actions": []})
         else:
+            boot = props.get("UnitFileState", "")
+            if boot not in ("enabled", "disabled"):       # static, masked, alias... : leave the boot state alone
+                boot = boot or "unknown"
+                shown = [a for a in actions if a not in BOOT_ACTIONS]
+            else:                                          # offer only the button that changes something
+                shown = [a for a in actions if a != ("enable" if boot == "enabled" else "disable")]
             result.append({
                 "name": name,
                 "state": f'{props.get("ActiveState")}/{props.get("SubState")}',
                 "description": props.get("Description", ""),
-                "actions": actions,
+                "boot": boot,
+                "actions": shown,
             })
     return result
 
 
 def act_service(name, action):
-    """Starts, stops or restarts one of the allowed services. Returns True, or raises ActionError."""
+    """Starts, stops, restarts, enables or disables (at boot) one of the allowed services. Returns True, or raises ActionError."""
     if not isinstance(name, str) or not isinstance(action, str) or action not in ALLOWED.get(name, []):
         raise ActionError(403, "Not allowed")
     r = _run(["sudo", "-n", SYSTEMCTL, action, name])
     if r.returncode != 0:
-        raise ActionError(500, r.stderr.strip() or "Command failed")
+        err = r.stderr.strip()
+        if action in BOOT_ACTIONS and "password is required" in err:
+            # An older sudo rule (copied before 1.2.0) does not know enable/disable yet.
+            raise ActionError(500, "This machine's sudo rule is older. Run 'sudo adminpanel-setup remote-enable' there again")
+        raise ActionError(500, err or "Command failed")
     return True
 
 

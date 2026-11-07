@@ -67,6 +67,16 @@ The bridge is installed in its own root-owned folder, `/usr/lib/adminpanel-bridg
 
 `remote-enable` now also adds the `adminpanel-remote` user to the `systemd-journal` group, the same as the panel's own account, so the bridge can read the journal. This lets the user read the whole journal of that machine, but the bridge only returns the log of the three allowed services (nginx, cron, ssh), at most 500 lines (200 KB). **A machine you already set up needs `sudo adminpanel-setup remote-enable '...'` run once more** (the same command; it is safe to repeat) to get the group. Until then the log button shows "Could not read the journal on that machine". Reading a log is written to the audit log as `remote_logs_read`.
 
+## Enable and disable at boot (1.2.0)
+
+The bridge's `services.act` also accepts `enable` and `disable` for `nginx` and `cron`. They run
+`systemctl enable NAME` / `systemctl disable NAME` (never `--now`), so they change what happens at the
+next boot and nothing else. `ssh` accepts neither. `services.list` now returns a `boot` field
+(`enabled`, `disabled`, `static`, ...) and only offers the button that would change something.
+
+The remote user's sudo rule is a copy made by `remote-enable`, so after upgrading a machine to 1.2.0
+run `sudo adminpanel-setup remote-enable 'KEY'` there once more to refresh it.
+
 ## Safety rules
 
 - The key in `authorized_keys` carries `command="/usr/bin/python3 /usr/lib/adminpanel-bridge/bridge.py",restrict`. Asking the server for any other command just runs the bridge, and `restrict` turns off shells, port forwarding and agent forwarding for that key.
