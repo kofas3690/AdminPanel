@@ -83,8 +83,13 @@ fi
 
 # ---- data and permissions ----
 for f in users.json panel.db audit.log; do
-    if [ -f "$APP/$f" ] && [ "$(stat -c '%a' "$APP/$f")" != "600" ]; then bad "$APP/$f should be mode 600"; fi
+    if [ -f "$APP/data/$f" ] && [ "$(stat -c '%a' "$APP/data/$f")" != "600" ]; then bad "$APP/data/$f should be mode 600"; fi
+    if [ -f "$APP/$f" ]; then bad "$APP/$f is in the old place. Run: sudo apt install --reinstall adminpanel (it moves it to $APP/data)"; fi
 done
+stray=$(find "$APP" -path "$APP/data" -prune -o \( ! -user root -o \( ! -type l -a -perm /022 \) \) -print 2>/dev/null | head -n 3)
+if [ -n "$stray" ]; then bad "program files the panel account could change: $(printf '%s' "$stray" | tr '\n' ' ')"
+elif runuser -u adminpanel -- test -w "$APP/app.py" 2>/dev/null; then bad "the panel account can write to its own program files"
+else ok "the program files are owned by root; the panel account cannot change them"; fi
 if [ -f "$STATE/ssh_known_hosts" ]; then
     if [ "$(stat -c '%U' "$STATE/ssh_known_hosts")" = root ]; then ok "the SSH host key is pinned (root-owned)"
     else bad "$STATE/ssh_known_hosts should be owned by root. Run: sudo adminpanel-setup ssh"; fi
@@ -92,12 +97,12 @@ elif [ -f "$APP/ssh_known_hosts" ]; then
     bad "the SSH host key pin is still in the old, panel-writable place. Run: sudo adminpanel-setup ssh"
 else note "the SSH host key is not pinned (Terminal and File manager need: sudo adminpanel-setup ssh)"
 fi
-if [ -f "$APP/users.json" ]; then
-    n=$(runuser -u adminpanel -- "$PY" -c "import json; print(len(json.load(open('$APP/users.json'))))" 2>/dev/null || echo 0)
+if [ -f "$APP/data/users.json" ]; then
+    n=$(runuser -u adminpanel -- "$PY" -c "import json; print(len(json.load(open('$APP/data/users.json'))))" 2>/dev/null || echo 0)
     [ "$n" -gt 0 ] && ok "$n panel administrator(s) configured" || note "no panel administrator yet. Run: sudo adminpanel-setup user"
     no2fa=$(runuser -u adminpanel -- "$PY" -c "
 import json
-u = json.load(open('$APP/users.json'))
+u = json.load(open('$APP/data/users.json'))
 print(' '.join(k for k, v in u.items() if not (isinstance(v, dict) and v.get('totp'))))" 2>/dev/null || true)
     if [ -n "$no2fa" ]; then bad "no two-step verification for: $no2fa (they cannot sign in). Run: sudo adminpanel-setup 2fa"
     elif [ "${n:-0}" -gt 0 ]; then ok "every panel administrator has two-step verification"; fi

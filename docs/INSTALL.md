@@ -167,7 +167,8 @@ sudo systemctl restart adminpanel        # logs everyone out
 
 | Path | Purpose |
 |---|---|
-| `/opt/adminpanel` | Application, Python environment, `users.json`, `panel.db`, `audit.log` |
+| `/opt/adminpanel` | Application and Python environment (owned by root; the panel cannot change them) |
+| `/opt/adminpanel/data` | `users.json`, `panel.db`, `audit.log`: the only place the panel account can write |
 | `/var/lib/adminpanel` | Chosen port, WireGuard keys, RAID/VPN/disk-job data |
 | `/usr/local/sbin/adminpanel-*` | Root helpers (root-owned) |
 | `/etc/sudoers.d/adminpanel*` | The sudo rules (one per helper) |

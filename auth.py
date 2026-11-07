@@ -10,7 +10,7 @@ from store import PersistentDict
 
 router = APIRouter(prefix="/api")
 ph = PasswordHasher()
-USERS_FILE = Path(__file__).parent / "users.json"
+from paths import USERS_FILE
 users_lock = threading.Lock()
 totp_lock = threading.Lock()
 

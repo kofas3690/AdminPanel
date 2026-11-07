@@ -1,4 +1,4 @@
-/opt/adminpanel/audit.log {
+/opt/adminpanel/data/audit.log {
     weekly
     rotate 12
     compress

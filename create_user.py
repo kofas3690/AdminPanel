@@ -2,7 +2,7 @@ import getpass, json, sys
 from pathlib import Path
 from argon2 import PasswordHasher
 
-USERS = Path("users.json")
+from paths import USERS_FILE as USERS
 ph = PasswordHasher()
 
 MIN_PASSWORD = 8

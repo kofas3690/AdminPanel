@@ -2,7 +2,7 @@ import json, sys
 from pathlib import Path
 import pyotp, qrcode
 
-USERS = Path("users.json")
+from paths import USERS_FILE as USERS
 users = json.loads(USERS.read_text())
 
 name = input("Username: ").strip()

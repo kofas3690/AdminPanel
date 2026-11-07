@@ -38,11 +38,27 @@ configure)
         }
     fi
 
-    # 3. ownership and permissions
-    chown -R adminpanel:adminpanel "$APP"
+    # 3. the data folder, and ownership. The program files belong to root, so a flaw in the panel
+    #    cannot rewrite the panel's own code; the panel account can write only in $APP/data.
+    install -d -m 700 -o adminpanel -g adminpanel "$APP/data"
+    #    upgrade from 1.2.x or older: what the panel saved used to sit next to the program files
+    MIGRATED=
+    for f in users.json panel.db panel.db-wal panel.db-shm audit.log; do
+        if [ -f "$APP/$f" ] && [ ! -e "$APP/data/$f" ]; then
+            if [ -z "$MIGRATED" ] && [ -d /run/systemd/system ]; then systemctl stop adminpanel.service || true; fi
+            MIGRATED=1
+            mv "$APP/$f" "$APP/data/$f"
+        fi
+    done
+    "$APP/.venv/bin/python" -m compileall -q -x '/(\.venv|data)/' "$APP" >/dev/null 2>&1 || true
+    chown -R root:root "$APP"
+    chown root:adminpanel "$APP"
     chmod 750 "$APP"
-    for f in users.json panel.db audit.log; do
-        if [ -f "$APP/$f" ]; then chmod 600 "$APP/$f"; fi
+    chmod -R go-w "$APP"
+    chown -R adminpanel:adminpanel "$APP/data"
+    chmod 700 "$APP/data"
+    for f in users.json panel.db panel.db-wal panel.db-shm audit.log; do
+        if [ -f "$APP/data/$f" ]; then chmod 600 "$APP/data/$f"; fi
     done
 
     # 3b. upgrade from 0.9.7 or older: the pinned SSH host key moves to the root-owned state folder,
@@ -71,7 +87,7 @@ configure)
         systemctl daemon-reload || true
         systemctl enable adminpanel-net-recover.service >/dev/null 2>&1 || true
         systemctl enable adminpanel.service >/dev/null 2>&1 || true
-        if [ -n "$2" ]; then
+        if [ -n "$2" ] && [ -z "$MIGRATED" ]; then
             systemctl try-restart adminpanel.service || true
         else
             systemctl start adminpanel.service || true

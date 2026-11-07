@@ -1,7 +1,9 @@
 import hashlib, json, os, sqlite3, threading, time
 from pathlib import Path
 
-DB_PATH = Path(os.environ.get("PANEL_DB", Path(__file__).parent / "panel.db"))
+from paths import DB_FILE
+
+DB_PATH = Path(os.environ.get("PANEL_DB", DB_FILE))
 
 os.close(os.open(DB_PATH, os.O_CREAT | os.O_RDWR, 0o600))
 _conn = sqlite3.connect(DB_PATH, check_same_thread=False)

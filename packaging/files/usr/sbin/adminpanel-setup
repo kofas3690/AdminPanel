@@ -198,7 +198,7 @@ step_tls() {
 count_users() {
     runuser -u adminpanel -- "$PY" -c "import json
 try:
-    print(len(json.load(open('$APP/users.json'))))
+    print(len(json.load(open('$APP/data/users.json'))))
 except Exception:
     print(0)"
 }

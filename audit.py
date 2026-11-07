@@ -1,7 +1,7 @@
 import json, syslog, time
 from pathlib import Path
 
-AUDIT = Path(__file__).parent / "audit.log"
+from paths import AUDIT_FILE as AUDIT
 
 
 def audit(user, ip, event, **detail):
