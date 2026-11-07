@@ -11,11 +11,14 @@ TRIES = 3
 username = input("Username: ").strip()
 if not username:
     sys.exit("The username cannot be empty")
-print(f"The password must be at least {MIN_PASSWORD} characters long. A longer phrase is safer.")
+print(f"The password must be at least {MIN_PASSWORD} characters long and contain at least one symbol (such as ! @ # $ % - _ .). A longer phrase is safer.")
 for attempt in range(TRIES):
-    password = getpass.getpass(f"Password (at least {MIN_PASSWORD} characters): ")
+    password = getpass.getpass(f"Password (at least {MIN_PASSWORD} characters, with a symbol): ")
     if len(password) < MIN_PASSWORD:
         print(f"Too short: that is {len(password)} characters. Use at least {MIN_PASSWORD}.")
+        continue
+    if not any(not ch.isalnum() and not ch.isspace() for ch in password):
+        print("Add at least one symbol, such as ! @ # $ % - _ .")
         continue
     if password != getpass.getpass("Repeat the password: "):
         print("The two passwords differ. Try again.")

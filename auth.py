@@ -18,6 +18,9 @@ SESSION_TTL = 8 * 3600        # sessions last 8 hours
 MAX_FAILS, WINDOW = 5, 300    # 5 failures per 5 minutes, then locked
 TOUCH_EVERY = 60              # how often "last active" is refreshed
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE") == "1"
+ACCOUNT_MAX_FAILS = 20        # wrong attempts per account from ALL addresses together, per 5 minutes
+# Emergency switch only: set ADMINPANEL_ALLOW_NO_2FA=1 in the service to let accounts without 2FA in.
+REQUIRE_2FA = os.environ.get("ADMINPANEL_ALLOW_NO_2FA") != "1"
 RECOVERY_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"   # no look-alike characters
 RECOVERY_RE = re.compile(r"[a-z0-9]{10}")
 
@@ -48,7 +51,7 @@ def save_users(users):
     os.replace(tmp, USERS_FILE)
 
 
-def locked(key):
+def locked(key, limit=MAX_FAILS):
     rec = failures.get(key)
     if not rec:
         return False
@@ -56,7 +59,7 @@ def locked(key):
     if time.time() - first > WINDOW:
         del failures[key]
         return False
-    return count >= MAX_FAILS
+    return count >= limit
 
 
 def record_failure(key):
@@ -124,7 +127,8 @@ def use_recovery(username, code):
 def login(body: LoginBody, request: Request, response: Response):
     ip = request.client.host
     key = f"{ip}:{body.username}"
-    if locked(key):
+    akey = f"account:{body.username[:64]}"
+    if locked(key) or locked(akey, ACCOUNT_MAX_FAILS):
         raise HTTPException(429, "Too many attempts. Try again in a few minutes.")
 
     users = load_users()
@@ -138,6 +142,12 @@ def login(body: LoginBody, request: Request, response: Response):
     except VerifyMismatchError:
         ok = False
 
+    if ok and not rec.get("totp") and REQUIRE_2FA:
+        # The password was right, so this is not a failed guess; say what to do instead.
+        audit(body.username[:64], ip, "login_refused_no_2fa")
+        raise HTTPException(403, "Two-step verification is not set up for this account. "
+                                 "On the server run: sudo adminpanel-setup 2fa")
+
     used_recovery = False
     if ok and rec.get("totp"):
         code = body.code.strip()
@@ -150,10 +160,11 @@ def login(body: LoginBody, request: Request, response: Response):
 
     if not ok:
         record_failure(key)
+        record_failure(akey)
         audit(body.username[:64], ip, "login_failed")
         raise HTTPException(401, "Invalid username, password or code")
 
-    failures.pop(key, None)
+    failures.pop(key, None)       # the account-wide count is left to expire on its own
     token = secrets.token_urlsafe(32)
     now = time.time()
     sessions[token] = [body.username, now + SESSION_TTL, now, ip,

@@ -12,6 +12,14 @@ Restart=on-failure
 RestartSec=3
 LockPersonality=yes
 RestrictRealtime=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
