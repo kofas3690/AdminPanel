@@ -72,9 +72,13 @@ say "Staging the package"
 STAGE=$(mktemp -d); trap 'rm -rf "$STAGE"' EXIT
 PKG="$STAGE/adminpanel_${VERSION}_all"
 mkdir -p "$PKG/DEBIAN" "$PKG/opt/adminpanel" "$PKG/usr/local/sbin" "$PKG/usr/sbin" \
-         "$PKG/usr/lib/systemd/system" "$PKG/usr/share/adminpanel" "$PKG/usr/share/doc/adminpanel"
+         "$PKG/usr/lib/systemd/system" "$PKG/usr/share/adminpanel" "$PKG/usr/share/doc/adminpanel" "$PKG/usr/lib/adminpanel-bridge"
 
 for m in "${MODULES[@]}"; do install -m 644 "$ROOT/$m.py" "$PKG/opt/adminpanel/$m.py"; done
+# The bridge runs as another account (adminpanel-remote), which cannot enter /opt/adminpanel (private to
+# the panel). Its code lives in a root-owned folder instead: the panel account cannot change it either.
+for m in bridge actions; do install -m 644 "$ROOT/$m.py" "$PKG/usr/lib/adminpanel-bridge/$m.py"; done
+echo "$VERSION" > "$PKG/usr/lib/adminpanel-bridge/VERSION"; chmod 644 "$PKG/usr/lib/adminpanel-bridge/VERSION"
 cp -a "$ROOT/static" "$PKG/opt/adminpanel/static"
 find "$PKG/opt/adminpanel/static" \( -name '*.bak' -o -name '*~' -o -name '.DS_Store' \) -delete
 find "$PKG/opt/adminpanel/static" -type d -exec chmod 755 {} +

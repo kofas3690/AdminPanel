@@ -13,7 +13,7 @@ Central panel --SSH, pinned host key--> adminpanel-bridge (on the other machine)
 
 ## Set up a machine (3 commands)
 
-Install the adminpanel package (1.0.8 is best; a machine on 1.0.5 to 1.0.7 works for services but cannot show facts or logs) on both machines. The other machine does not need to run the panel's web page; it only needs the package files and an SSH server.
+Install the adminpanel package (1.1.0 or later; older versions could not run the bridge for the remote account, see below) on both machines. The other machine does not need to run the panel's web page; it only needs the package files and an SSH server.
 
 1. **On the central panel**, create (or show) its key for other machines:
 
@@ -53,9 +53,15 @@ Other commands: `adminpanel-setup list-hosts`, `adminpanel-setup remove-host NAM
 ## Try the bridge on one machine
 
 ```bash
-echo '{"id":1,"op":"ping"}' | python3 /opt/adminpanel/bridge.py
-echo '{"id":3,"op":"rm"}' | python3 /opt/adminpanel/bridge.py        # refused: unknown operation
+echo '{"id":1,"op":"ping"}' | python3 /usr/lib/adminpanel-bridge/bridge.py
+echo '{"id":3,"op":"rm"}' | python3 /usr/lib/adminpanel-bridge/bridge.py        # refused: unknown operation
 ```
+
+## Where the bridge lives (1.1.0)
+
+The bridge is installed in its own root-owned folder, `/usr/lib/adminpanel-bridge/`, and `remote-enable` points the key at it. Before 1.1.0 the key pointed into `/opt/adminpanel`, which is private to the panel's own account, so the bridge could not start and the panel said "No usable answer from that server". The new place has a second benefit: the panel's account cannot change the code that the bridge runs.
+
+**On every machine you set up before 1.1.0:** install the 1.1.0 package, then run the same `sudo adminpanel-setup remote-enable '...'` command again. It rewrites the key's command and removes the group workaround (`usermod -aG adminpanel adminpanel-remote`) if you used it.
 
 ## Reading logs (1.0.8)
 
@@ -63,7 +69,7 @@ echo '{"id":3,"op":"rm"}' | python3 /opt/adminpanel/bridge.py        # refused: 
 
 ## Safety rules
 
-- The key in `authorized_keys` carries `command="/usr/bin/python3 /opt/adminpanel/bridge.py",restrict`. Asking the server for any other command just runs the bridge, and `restrict` turns off shells, port forwarding and agent forwarding for that key.
+- The key in `authorized_keys` carries `command="/usr/bin/python3 /usr/lib/adminpanel-bridge/bridge.py",restrict`. Asking the server for any other command just runs the bridge, and `restrict` turns off shells, port forwarding and agent forwarding for that key.
 - `remote-enable` accepts only a plain `ssh-ed25519` public key line, so options or extra lines cannot be smuggled in.
 - `add-host` pins the host key only after you confirm its fingerprint; a wrong fingerprint changes nothing. A changed host key later stops every request (502).
 - A refused action never reaches `systemctl`, and the audit log records the host name with every remote action.

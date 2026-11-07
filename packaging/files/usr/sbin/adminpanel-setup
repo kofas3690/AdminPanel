@@ -16,6 +16,7 @@
 set -euo pipefail
 
 APP=/opt/adminpanel
+BRIDGE=${ADMINPANEL_BRIDGE_DIR:-/usr/lib/adminpanel-bridge}   # root-owned copy of the bridge, readable by the bridge user
 PY="$APP/.venv/bin/python"
 SHARE=/usr/share/adminpanel
 CERT=/etc/ssl/certs/adminpanel.crt
@@ -267,19 +268,20 @@ step_remote_enable() {
     say "Letting a central panel manage this machine (bridge only)"
     [[ "$key" =~ ^ssh-ed25519\ [A-Za-z0-9+/]+=*(\ [A-Za-z0-9._@-]+)?$ ]] \
         || die "usage: adminpanel-setup remote-enable 'ssh-ed25519 AAAA... adminpanel-central'   (the line printed by: adminpanel-setup remote-key)"
-    [ -f "$APP/bridge.py" ] || die "this machine has no $APP/bridge.py. Install adminpanel 1.0.5 or later first."
+    [ -f "$BRIDGE/bridge.py" ] && [ -f "$BRIDGE/actions.py" ] || die "this machine has no $BRIDGE/bridge.py. Install adminpanel 1.1.0 or later first."
     [ -x /usr/bin/python3 ] || die "/usr/bin/python3 is missing"
     [ -f /etc/sudoers.d/adminpanel ] || die "/etc/sudoers.d/adminpanel is missing. Reinstall the adminpanel package."
     if ! id "$REMOTE_USER" >/dev/null 2>&1; then
         useradd --system --create-home --home-dir "$home" --shell /bin/sh --comment "AdminPanel remote bridge" "$REMOTE_USER"
     fi
     usermod -p '*' "$REMOTE_USER"                          # no password; the key is the only way in
+    gpasswd -d "$REMOTE_USER" adminpanel >/dev/null 2>&1 || true   # not needed any more (older workaround)
     # Reading service logs (the bridge's logs.tail) needs the journal, like the panel's own account.
     if getent group systemd-journal >/dev/null 2>&1; then usermod -aG systemd-journal "$REMOTE_USER"; fi
     install -d -m 700 -o "$REMOTE_USER" -g "$REMOTE_USER" "$home/.ssh"
     chmod 755 "$home"
     # The key may run the bridge and nothing else ("restrict" turns off shells, forwarding and agents).
-    printf 'command="/usr/bin/python3 %s/bridge.py",restrict %s\n' "$APP" "$key" > "$home/.ssh/authorized_keys"
+    printf 'command="/usr/bin/python3 %s/bridge.py",restrict %s\n' "$BRIDGE" "$key" > "$home/.ssh/authorized_keys"
     chown "$REMOTE_USER:$REMOTE_USER" "$home/.ssh/authorized_keys"; chmod 600 "$home/.ssh/authorized_keys"
     # The same sudo rules the panel itself has, for this user (one source of truth).
     tmp=$(mktemp)
