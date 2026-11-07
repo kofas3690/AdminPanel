@@ -4,6 +4,69 @@ Install guide: [docs/INSTALL.md](docs/INSTALL.md). Upgrading from any earlier ve
 
 ---
 
+## v1.1.0: Run the remote bridge from a root-owned folder (2026-11-06)
+
+**Install**
+
+```bash
+sudo apt update
+sudo apt install ./adminpanel_1.1.0_all.deb
+sudo adminpanel-selfcheck
+```
+
+Your accounts, certificate, port and settings are kept. Full guide: [docs/INSTALL.md](https://github.com/kofas3690/AdminPanel/blob/main/docs/INSTALL.md).
+
+### Fixed
+- **Remote machines answered "No usable answer from that server".** On a machine set up with `remote-enable`, the bridge could not start, because it was run from `/opt/adminpanel`, a folder only the panel's own account may enter. The bridge now has its own root-owned folder, `/usr/lib/adminpanel-bridge/`, and `remote-enable` points the key there. The panel's account can no longer change the code the bridge runs either.
+
+### Changed
+- `remote-enable` needs the 1.1.0 package on the machine (it checks for the new folder) and removes the `adminpanel-remote` user from the `adminpanel` group if an earlier workaround added it.
+- **For every machine you set up before:** install 1.1.0 on it and run the same `sudo adminpanel-setup remote-enable '...'` line again. See [docs/REMOTE.md](https://github.com/kofas3690/AdminPanel/blob/main/docs/REMOTE.md).
+
+---
+
+## v1.0.9: Fix button labels (2026-11-06)
+
+**Install**
+
+```bash
+sudo apt update
+sudo apt install ./adminpanel_1.0.9_all.deb
+sudo adminpanel-selfcheck
+```
+
+Your accounts, certificate, port and settings are kept. Full guide: [docs/INSTALL.md](https://github.com/kofas3690/AdminPanel/blob/main/docs/INSTALL.md).
+
+### Fixed
+- **Button labels showing codes.** In the File manager the buttons showed the text `…`, `←`, `→`, `↑` and `⟳` instead of "Connect another…" and the back, forward, up and refresh arrows. The same happened to "Unlock…" and "Create volume group…" on the Storage page and "Import a client config…" on the VPN page. The labels now show the right characters.
+
+---
+
+## v1.0.8: Remote server facts and service logs (2026-11-06)
+
+**Install**
+
+```bash
+sudo apt update
+sudo apt install ./adminpanel_1.0.8_all.deb
+sudo adminpanel-selfcheck
+```
+
+Your accounts, certificate, port and settings are kept. Full guide: [docs/INSTALL.md](https://github.com/kofas3690/AdminPanel/blob/main/docs/INSTALL.md).
+
+### Added
+- **Machine facts on the Remote services page.** Choosing a machine now shows its name, system, kernel, uptime, load, memory and disk, read through the same restricted bridge.
+- **Service logs.** Each service has a **log** button that shows the last 50, 100, 200 or 500 journal lines of that service on the other machine, with Reload and Close. Only nginx, cron and ssh can be read, nothing else from the journal. Every read is written to the audit log (`remote_logs_read`).
+- New bridge operations `system.info` and `logs.tail`; new endpoints `GET /api/remote/info` and `GET /api/remote/logs` (panel login needed).
+
+### Changed
+- `adminpanel-setup remote-enable` adds the bridge user to the `systemd-journal` group so logs can be read. **For a machine you already set up, run the same `remote-enable` command once more.**
+
+### Known limitations
+- Still read-only apart from the start, stop and restart of the three allowed services. The Terminal, File manager and other pages work on this machine only.
+
+---
+
 ## v1.0.7: Remote services page (2026-11-06)
 
 **Install**
