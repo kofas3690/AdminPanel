@@ -4,7 +4,7 @@
 
 ![Dashboard](screenshots/dashboard.png)
 
-> **Status:** version 1.1.1, active development. Install only on machines you control. The panel can change disks, networking and accounts.
+> **Status:** version 1.2.0, active development. Install only on machines you control. The panel can change disks, networking and accounts.
 
 ---
 
@@ -49,7 +49,7 @@ Requirements: Ubuntu or Debian (or a derivative) with systemd, Python 3.10 or ne
 ```bash
 # 1. Download the latest adminpanel_X.Y.Z_all.deb from the Releases page, then:
 sudo apt update
-sudo apt install ./adminpanel_1.1.1_all.deb
+sudo apt install ./adminpanel_1.2.0_all.deb
 
 # 2. First-run setup: certificate, web server, administrator account, two-step verification
 sudo adminpanel-setup
