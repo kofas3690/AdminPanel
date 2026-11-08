@@ -2,7 +2,8 @@
   "use strict";
   const NAV = [
     ["System", [["Overview", "/"], ["Servers", "/fleet.html", "remote services ssh bridge reboot shut down panels"], ["Services", "/units.html"], ["Storage", "/storage.html"],
-                ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html"]]],
+                ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html"],
+                ["Logs", "/logs.html", "journal journalctl errors messages syslog"]]],
     ["Tools", [["Software updates", "/updates.html"], ["File manager", "/files.html"],
                ["Terminal", "/terminal.html"]]],
   ];

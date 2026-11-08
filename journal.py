@@ -23,7 +23,7 @@ def message(e):
 
 
 @router.get("")
-def entries(lines: int = 200, rng: str = "boot", priority: int = -1, unit: str = "",
+def entries(lines: int = 200, rng: str = "boot", priority: int = -1, unit: str = "", ident: str = "",
             q: str = "", after: str = "", user: str = Depends(current_user)):
     args = [JOURNALCTL, "--no-pager", "-o", "json", "-n", str(max(10, min(lines, 1000)))]
     if after:
@@ -45,6 +45,11 @@ def entries(lines: int = 200, rng: str = "boot", priority: int = -1, unit: str =
         if not NAME_RE.fullmatch(unit):
             raise HTTPException(400, "Invalid unit name")
         args += ["-u", unit]
+    ident = ident.strip()
+    if ident:
+        if not NAME_RE.fullmatch(ident):
+            raise HTTPException(400, "Invalid identifier")
+        args += ["-t", ident]
     q = q.strip()
     if q:
         if len(q) > 100 or any(ord(ch) < 32 for ch in q):
@@ -71,8 +76,23 @@ def entries(lines: int = 200, rng: str = "boot", priority: int = -1, unit: str =
         out.append({
             "t": int(e.get("__REALTIME_TIMESTAMP", 0) or 0) // 1000,
             "p": prio if 0 <= prio <= 7 else 6,
-            "u": e.get("_SYSTEMD_UNIT") or e.get("SYSLOG_IDENTIFIER") or "",
+            "u": e.get("SYSLOG_IDENTIFIER") or e.get("_SYSTEMD_UNIT") or "",
+            "b": e.get("_BOOT_ID") or "",
             "m": message(e)[:4000],
         })
         cursor = e.get("__CURSOR") or cursor
     return {"entries": out, "cursor": cursor}
+
+
+@router.get("/identifiers")
+def identifiers(user: str = Depends(current_user)):
+    """Names that appear as the source of journal entries (the Identifier drop-down)."""
+    try:
+        r = subprocess.run([JOURNALCTL, "--no-pager", "-F", "SYSLOG_IDENTIFIER"], capture_output=True,
+                           encoding="utf-8", errors="replace", timeout=25, env=ENV, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "Listing the sources took too long.")
+    if r.returncode != 0:
+        raise HTTPException(400, (r.stderr or "journalctl failed").strip()[:200])
+    names = sorted({n for n in r.stdout.splitlines() if NAME_RE.fullmatch(n)}, key=str.lower)
+    return names[:500]
