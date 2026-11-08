@@ -20,6 +20,7 @@ from terminal import router as terminal_router
 from storage import router as storage_router
 from network import router as network_router
 from fleet import router as fleet_router, health_router
+from power import router as power_router
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -49,6 +50,7 @@ app.include_router(users_router)
 app.include_router(terminal_router)
 app.include_router(storage_router)
 app.include_router(network_router)
+app.include_router(power_router)
 app.include_router(fleet_router)
 app.include_router(health_router)
 

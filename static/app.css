@@ -135,6 +135,8 @@ button.primary:hover:not(:disabled), #apply:hover:not(:disabled), #keep:hover:no
 }
 button.tab.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 button.act { padding: 7px 14px; }
+button.danger { border-color: var(--crit); color: var(--crit); }
+button.danger:hover:not(:disabled) { background: var(--crit); color: #fff; }
 
 /* ---------- tables, panels, code ---------- */
 table {
