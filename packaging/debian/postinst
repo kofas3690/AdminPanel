@@ -50,6 +50,7 @@ configure)
             mv "$APP/$f" "$APP/data/$f"
         fi
     done
+    chattr -a "$APP/data/audit.log" 2>/dev/null || true     # append-only files refuse chown and chmod
     "$APP/.venv/bin/python" -m compileall -q -x '/(\.venv|data)/' "$APP" >/dev/null 2>&1 || true
     chown -R root:root "$APP"
     chown root:adminpanel "$APP"
@@ -60,6 +61,12 @@ configure)
     for f in users.json panel.db panel.db-wal panel.db-shm audit.log; do
         if [ -f "$APP/data/$f" ]; then chmod 600 "$APP/data/$f"; fi
     done
+    # 3a. the audit log can only be added to (1.3.1): the panel account can append lines but cannot
+    #     erase, rewrite, rename or delete them. Only root can lift this (chattr -a).
+    if [ ! -e "$APP/data/audit.log" ]; then
+        install -m 600 -o adminpanel -g adminpanel /dev/null "$APP/data/audit.log"
+    fi
+    chattr +a "$APP/data/audit.log" 2>/dev/null || echo "adminpanel: note: this file system does not support append-only files; the audit log is still copied to the journal" >&2
 
     # 3b. upgrade from 0.9.7 or older: the pinned SSH host key moves to the root-owned state folder,
     #     where the panel account can read it but not change it. It is re-pinned from the real host key.

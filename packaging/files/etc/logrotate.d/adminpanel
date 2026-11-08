@@ -6,5 +6,12 @@
     missingok
     notifempty
     copytruncate
+    sharedscripts
+    prerotate
+        chattr -a /opt/adminpanel/data/audit.log 2>/dev/null || true
+    endscript
+    postrotate
+        chattr +a /opt/adminpanel/data/audit.log 2>/dev/null || true
+    endscript
     create 0600 adminpanel adminpanel
 }

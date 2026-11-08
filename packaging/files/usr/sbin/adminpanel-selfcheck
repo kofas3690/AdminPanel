@@ -86,6 +86,10 @@ for f in users.json panel.db audit.log; do
     if [ -f "$APP/data/$f" ] && [ "$(stat -c '%a' "$APP/data/$f")" != "600" ]; then bad "$APP/data/$f should be mode 600"; fi
     if [ -f "$APP/$f" ]; then bad "$APP/$f is in the old place. Run: sudo apt install --reinstall adminpanel (it moves it to $APP/data)"; fi
 done
+if [ -f "$APP/data/audit.log" ]; then
+    if lsattr -d "$APP/data/audit.log" 2>/dev/null | cut -c1-20 | grep -q a; then ok "the audit log is append-only (the panel can add lines but not change or erase them)"
+    else note "the audit log is not append-only (the file system may not support it). The copy in the system journal is the safeguard"; fi
+fi
 stray=$(find "$APP" -path "$APP/data" -prune -o \( ! -user root -o \( ! -type l -a -perm /022 \) \) -print 2>/dev/null | head -n 3)
 if [ -n "$stray" ]; then bad "program files the panel account could change: $(printf '%s' "$stray" | tr '\n' ' ')"
 elif runuser -u adminpanel -- test -w "$APP/app.py" 2>/dev/null; then bad "the panel account can write to its own program files"

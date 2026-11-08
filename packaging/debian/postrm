@@ -17,6 +17,7 @@ remove|purge)
     ;;
 esac
 if [ "$1" = purge ]; then
+    chattr -a /opt/adminpanel/data/audit.log 2>/dev/null || true     # an append-only file cannot be deleted
     rm -rf /opt/adminpanel
     rm -f /etc/nginx/sites-available/adminpanel.conf /etc/nginx/snippets/adminpanel-upload.conf \
           /etc/nginx/snippets/adminpanel-disks.conf /etc/ssl/certs/adminpanel.crt \
