@@ -69,3 +69,32 @@ async function persist(okText) {
 $("save").onclick = () => persist("Settings saved.");
 setInterval(() => { if (!document.hidden) refresh(); }, 30000);
 refresh();
+
+// ---- email ----
+const msay = (t, bad) => { const m = $("mmsg"); m.textContent = t; m.className = bad ? "crit" : "muted"; };
+function mailBody() {
+  return { enabled: $("men").checked, host: $("mh").value, port: +$("mp").value || 0, security: $("ms").value,
+           username: $("mu").value, sender: $("mf").value, password: $("mw2").value || null,
+           to: $("mt").value.split(/[,;\s]+/).filter(Boolean) };
+}
+function fillMail(c) {
+  $("men").checked = c.enabled; $("mh").value = c.host; $("mp").value = c.port; $("ms").value = c.security;
+  $("mu").value = c.username; $("mf").value = c.sender; $("mt").value = c.to.join(", ");
+  $("mw2").value = ""; $("mw2").placeholder = c.has_password ? "(saved; leave empty to keep it)" : "";
+}
+async function loadMail() {
+  const r = await api("/api/alerts/email");
+  if (r.ok) fillMail(await r.json());
+}
+$("ms").onchange = () => { const p = $("mp"); if (p.value === "587" && $("ms").value === "ssl") p.value = 465; else if (p.value === "465" && $("ms").value === "starttls") p.value = 587; };
+$("msave").onclick = async () => {
+  const r = await api("/api/alerts/email", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(mailBody()) });
+  if (!r.ok) { msay(await errText(r), true); return; }
+  fillMail(await r.json()); msay("Email settings saved.");
+};
+$("mtest").onclick = async () => {
+  msay("Sending\u2026");
+  const r = await api("/api/alerts/email/test", { method: "POST" });
+  msay(r.ok ? "Test email sent. Check the inbox (and the spam folder)." : await errText(r), !r.ok);
+};
+loadMail();

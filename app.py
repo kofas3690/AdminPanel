@@ -21,7 +21,7 @@ from storage import router as storage_router
 from network import router as network_router
 from fleet import router as fleet_router, health_router
 from power import router as power_router
-from alerts import router as alerts_router
+from alerts import router as alerts_router, start_watcher as alerts_start
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -53,8 +53,14 @@ app.include_router(storage_router)
 app.include_router(network_router)
 app.include_router(power_router)
 app.include_router(alerts_router)
+
 app.include_router(fleet_router)
 app.include_router(health_router)
+
+
+@app.on_event("startup")
+def _start_alert_mail():
+    alerts_start()
 
 
 @app.get("/api/stats")

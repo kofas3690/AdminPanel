@@ -22,7 +22,11 @@
   .mut { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
   .mut span { border: 1px solid var(--line); border-radius: 999px; padding: 2px 6px 2px 12px; font-size: 13px; }
   .mut button { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 15px; }
-  #amsg { margin: 8px 0; min-height: 1.2em; }
+  #amsg, #mmsg { margin: 8px 0; min-height: 1.2em; }
+  .mailgrid { grid-template-columns: 160px minmax(220px, 360px); max-width: 600px; }
+  .mailgrid input[type=text], .mailgrid input[type=password], .mailgrid select { width: 100%; }
+  .mailgrid input[type=number] { width: 100px; }
+  .chk { display: block; margin: 8px 0; }
 </style>
 
 <h1>Alerts</h1>
@@ -41,5 +45,20 @@
 <div id="muted" class="mut"></div>
 <p><button id="save" class="primary">Save settings</button></p>
 <div id="amsg" class="muted"></div>
+
+<h2>Email</h2>
+<p class="muted">Send a message when a new problem appears and when it clears. Checked every two minutes while the panel runs. The connection must be encrypted. For Gmail and similar, use an app password, not your normal password.</p>
+<label class="chk"><input type="checkbox" id="men"> Send alert emails</label>
+<div class="setgrid mailgrid">
+  <label for="mh">Mail server</label><input id="mh" type="text" placeholder="smtp.gmail.com" autocomplete="off">
+  <label for="mp">Port</label><input id="mp" type="number" min="1" max="65535">
+  <label for="ms">Security</label><select id="ms"><option value="starttls">STARTTLS (port 587)</option><option value="ssl">SSL (port 465)</option></select>
+  <label for="mu">User name</label><input id="mu" type="text" autocomplete="off">
+  <label for="mw2">Password</label><input id="mw2" type="password" autocomplete="new-password" placeholder="">
+  <label for="mf">From address</label><input id="mf" type="text" placeholder="alerts@example.com" autocomplete="off">
+  <label for="mt">To address(es)</label><input id="mt" type="text" placeholder="you@example.com, other@example.com" autocomplete="off">
+</div>
+<p><button id="msave" class="primary">Save email settings</button> <button id="mtest">Send test email</button></p>
+<div id="mmsg" class="muted"></div>
 
 <script src="/page/alerts.js"></script>

@@ -4,15 +4,16 @@ Nothing here changes the machine. Each request looks at the machine as it is now
 problems it finds, so the list is always current and there is no separate alert history to go stale.
 The only stored thing is the settings (thresholds and the services the person chose to mute).
 """
-import json
+import json, socket, threading, time
 import psutil
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from auth import current_user
 from audit import audit
 from store import PersistentDict
 import units
+import mailer
 
 router = APIRouter(prefix="/api/alerts")
 store = PersistentDict("alert_settings")
@@ -76,13 +77,17 @@ def failed_alerts(cfg):
     return out
 
 
-@router.get("")
-def current(user: str = Depends(current_user)):
+def scan():
     cfg = settings()
     found = disk_alerts(cfg) + memory_alerts(cfg) + failed_alerts(cfg)
     active = [a for a in found if not a.get("muted")]
     active.sort(key=lambda a: (ORDER[a["severity"]], a["title"]))
-    muted = [a for a in found if a.get("muted")]
+    return cfg, active, [a for a in found if a.get("muted")]
+
+
+@router.get("")
+def current(user: str = Depends(current_user)):
+    cfg, active, muted = scan()
     return {"alerts": active, "muted_active": muted, "settings": cfg,
             "critical": sum(a["severity"] == "critical" for a in active),
             "warning": sum(a["severity"] == "warning" for a in active)}
@@ -108,3 +113,112 @@ def save(body: Body, request: Request, user: str = Depends(current_user)):
     store["cfg"] = cfg
     audit(user, request.client.host, "alert_settings", **{k: v for k, v in cfg.items() if k != "muted"}, muted=len(muted))
     return cfg
+
+
+# ---- email -------------------------------------------------------------------------------------
+
+notified = PersistentDict("alert_notified")     # "id|severity" -> time first mailed
+CHECK_EVERY = 120                               # seconds between checks while email is on
+
+
+class MailBody(BaseModel):
+    enabled: bool
+    host: str = ""
+    port: int = 587
+    security: str = "starttls"
+    username: str = ""
+    sender: str = ""
+    to: List[str] = []
+    password: Optional[str] = None              # empty or missing keeps the saved password
+
+
+def mail_view():
+    c = mailer.get()
+    return {**c, "has_password": mailer.has_password()}
+
+
+@router.get("/email")
+def mail_get(user: str = Depends(current_user)):
+    return mail_view()
+
+
+@router.put("/email")
+def mail_save(body: MailBody, request: Request, user: str = Depends(current_user)):
+    c = {"enabled": body.enabled, "host": body.host.strip(), "port": body.port, "security": body.security,
+         "username": body.username.strip(), "sender": body.sender.strip(),
+         "to": [a.strip() for a in body.to if a.strip()]}
+    pw = body.password or None
+    try:
+        mailer.validate(c, pw)
+    except mailer.MailError as e:
+        raise HTTPException(400, str(e))
+    if pw is not None:
+        mailer.set_password(pw)
+    if not c["enabled"] or c["host"] != mailer.get()["host"]:
+        for k, _ in notified.items():
+            del notified[k]                     # a new setup starts fresh and reports what exists now
+    mailer.store["cfg"] = c
+    audit(user, request.client.host, "alert_email_settings", enabled=c["enabled"], host=c["host"],
+          port=c["port"], to=len(c["to"]), password_changed=pw is not None)
+    return mail_view()
+
+
+@router.post("/email/test")
+def mail_test(request: Request, user: str = Depends(current_user)):
+    try:
+        mailer.send("AdminPanel test message from " + socket.gethostname(),
+                    "This is a test message from the AdminPanel on " + socket.gethostname() +
+                    ".\nIf you can read it, alert emails will reach you.\n")
+    except mailer.MailError as e:
+        audit(user, request.client.host, "alert_email_test_failed", error=str(e)[:200])
+        raise HTTPException(400, str(e))
+    audit(user, request.client.host, "alert_email_test")
+    return {"ok": True}
+
+
+def notify_once():
+    """One check: mail anything new (and anything that has cleared) since the last mail. Returns True if mailed."""
+    c = mailer.get()
+    if not c["enabled"]:
+        return False
+    cfg, active, _ = scan()
+    now = {a["id"] + "|" + a["severity"]: a for a in active}
+    before = dict(notified.items())
+    new = [a for k, a in now.items() if k not in before]
+    gone = [k for k in before if k not in now]
+    if not new and not gone:
+        return False
+    host = socket.gethostname()
+    lines = []
+    if new:
+        lines.append("New problems on " + host + ":")
+        lines += ["  [" + a["severity"].upper() + "] " + a["title"] + (" - " + a["detail"] if a["detail"] else "") for a in new]
+    if gone:
+        lines += ["", "No longer a problem:"] + ["  " + str((before[k] or {}).get("title") or k.split("|")[0]) for k in gone]
+    lines += ["", "Open the Alerts page of the AdminPanel for details."]
+    subject = f"[{host}] " + (f"{len(new)} new alert" + ("s" if len(new) != 1 else "") if new else "alerts cleared")
+    mailer.send(subject, "\n".join(lines) + "\n", c)
+    for k in gone:
+        del notified[k]
+    for k in now:
+        if k not in before:
+            notified[k] = {"t": int(time.time()), "title": now[k]["title"]}
+    return True
+
+
+def watcher():
+    failing = False
+    time.sleep(30)
+    while True:
+        try:
+            notify_once()
+            failing = False
+        except Exception as e:                  # keep the loop alive whatever happens
+            if not failing:                     # one audit line per run of failures, not one per check
+                audit("system", "-", "alert_email_failed", error=str(e)[:200])
+            failing = True
+        time.sleep(CHECK_EVERY)
+
+
+def start_watcher():
+    threading.Thread(target=watcher, name="alert-mail", daemon=True).start()
