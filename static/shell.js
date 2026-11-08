@@ -7,6 +7,21 @@
                ["Terminal", "/terminal.html"]]],
   ];
 
+  // Reboot or shut down this machine, after the person types its name. Used by the Overview page and
+  // by the "Reboot required" chip. Returns the answer text, or null if they cancelled.
+  window.AdminPower = {
+    async run(action) {
+      const label = action === "reboot" ? "Reboot" : "Shut down";
+      const host = (await (await fetch("/api/system")).json()).hostname;
+      const typed = prompt(label + " this machine now?\nType its name (" + host + ") to confirm.");
+      if (typed === null) return null;
+      const r = await fetch("/api/power/" + action, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: typed }) });
+      if (r.status === 401) { location.href = "/login.html"; return null; }
+      try { const j = await r.json(); return j.message || j.detail || "Request failed"; } catch (e) { return "Request failed"; }
+    },
+  };
+
   const el = (tag, cls, text) => {
     const e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -33,6 +48,12 @@
     brand.append(bu, bh);
     const chip = el("a", "chip warn", "Reboot required");
     chip.href = "/updates.html";
+    chip.title = "Click to reboot this machine now";
+    chip.onclick = async (e) => {
+      e.preventDefault();
+      const msg = await window.AdminPower.run("reboot");
+      if (msg) alert(msg);
+    };
     chip.hidden = true;
     const menu = el("div", "menu");
     const sess = el("button", "", "Session \u25be");

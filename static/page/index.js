@@ -146,15 +146,8 @@ async function act(name, action) {
 }
 
 async function power(action) {
-  const label = action === "reboot" ? "Reboot" : "Shut down";
-  const host = (await (await api("/api/system")).json()).hostname;
-  const typed = prompt(label + " this machine now?\nType its name (" + host + ") to confirm.");
-  if (typed === null) return;
-  const r = await api("/api/power/" + action, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: typed }) });
-  let msg = "Request failed";
-  try { const j = await r.json(); msg = j.message || j.detail || msg; } catch (e) {}
-  $("powermsg").textContent = msg;
+  const msg = await AdminPower.run(action);
+  if (msg) $("powermsg").textContent = msg;
 }
 $("reboot").addEventListener("click", () => power("reboot"));
 $("poweroff").addEventListener("click", () => power("poweroff"));
