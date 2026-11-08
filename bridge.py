@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import actions                                           # noqa: E402
 
 MAX_LINE = 65536
+PENDING = []                              # power actions to run AFTER the answer has been sent
 
 
 def version():
@@ -46,12 +47,19 @@ def op_logs_tail(args):
     return actions.service_logs(args.get("name"), args.get("lines", 100))
 
 
+def op_power_act(args):
+    actions.check_power(args.get("action"))
+    PENDING.append(args["action"])          # the machine goes down, so the answer must leave first
+    return True
+
+
 OPS = {                                  # operation -> (function, the argument names it accepts)
     "ping": (op_ping, ()),
     "services.list": (op_services_list, ()),
     "services.act": (op_services_act, ("name", "action")),
     "system.info": (op_system_info, ()),
     "logs.tail": (op_logs_tail, ("name", "lines")),
+    "power.act": (op_power_act, ("action",)),
 }
 
 
@@ -87,6 +95,11 @@ def main():
     for raw in sys.stdin:
         sys.stdout.write(json.dumps(handle(raw), separators=(",", ":")) + "\n")
         sys.stdout.flush()
+        while PENDING:
+            try:
+                actions.run_power(PENDING.pop(0))
+            except actions.ActionError:
+                pass
 
 
 if __name__ == "__main__":

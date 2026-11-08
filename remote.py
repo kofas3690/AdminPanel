@@ -9,6 +9,7 @@ from pathlib import Path
 
 import paramiko
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 
 from auth import current_user
 from audit import audit
@@ -164,3 +165,33 @@ def api_logs(host: str, name: str, request: Request, lines: int = 100, user: str
         raise HTTPException(502, "No usable answer from that server")
     audit(user, request.client.host, "remote_logs_read", host=host, host_name=host_label(host), service=name, lines=lines)
     return {"text": text}
+
+
+class PowerBody(BaseModel):
+    host: str
+    confirm: str = ""
+
+
+@router.post("/power/{action}")
+def api_power(action: str, body: PowerBody, request: Request, user: str = Depends(current_user)):
+    """Reboot or shut down a listed machine. The caller must type the machine's name from the list."""
+    if action not in ("reboot", "poweroff"):
+        raise HTTPException(404, "Unknown action")
+    try:
+        get_host(body.host)
+    except RemoteError as e:
+        raise HTTPException(e.status, e.message)
+    name = host_label(body.host)
+    if body.confirm.strip().lower() != name.lower():
+        raise HTTPException(400, f"Type the machine's name ({name}) to confirm")
+    ip = request.client.host
+    audit(user, ip, "remote_power", host=body.host, host_name=name, action=action)
+    try:
+        call(body.host, "power.act", {"action": action})
+    except RemoteError as e:
+        msg = e.message
+        if e.status == 404 and "unknown operation" in msg:
+            msg = "That machine has an older adminpanel. Update it, then run 'sudo adminpanel-setup remote-enable' there again"
+        audit(user, ip, "remote_power_failed", host=body.host, host_name=name, action=action, error=msg[:200])
+        raise HTTPException(e.status if e.status != 404 else 409, msg)
+    return {"ok": True, "message": name + (" is rebooting now." if action == "reboot" else " is shutting down now.")}

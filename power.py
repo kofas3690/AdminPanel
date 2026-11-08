@@ -5,47 +5,32 @@ happens while a software update (apt or dpkg) is running, because stopping one h
 packages broken. The attempt is written to the audit log first, and the command runs only after the
 answer has been sent, since the panel stops with the machine.
 """
-import socket, subprocess
-import psutil
+import socket
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel
 from auth import current_user
 from audit import audit
+import actions
 
 router = APIRouter(prefix="/api/power")
 
-SUDO = "/usr/bin/sudo"
-SYSTEMCTL = "/usr/bin/systemctl"
-ACTIONS = {"reboot": "reboot", "poweroff": "poweroff"}
-BUSY = {"apt", "apt-get", "dpkg", "unattended-upgr"}      # process names that mean an update is running
+ACTIONS = actions.POWER_ACTIONS
+update_running = actions.update_running            # the same checks and command as on other machines
 
 
 class PowerBody(BaseModel):
     confirm: str = ""
 
 
-def update_running():
-    for p in psutil.process_iter(["name"]):
-        if (p.info.get("name") or "") in BUSY:
-            return True
-    return False
-
-
 def run_command(action):
-    """Ask systemd to start the shutdown. --no-block returns as soon as the job is queued."""
-    return subprocess.run([SUDO, "-n", SYSTEMCTL, "--no-block", ACTIONS[action]],
-                          capture_output=True, text=True, timeout=20)
+    return actions.run_power(action)
 
 
 def _do(action, user, ip):
     try:
-        r = run_command(action)
-        ok = r.returncode == 0
-        err = (r.stderr or "").strip()[:200]
-    except (OSError, subprocess.SubprocessError) as e:
-        ok, err = False, str(e)[:200]
-    if not ok:
-        audit(user, ip, "power_failed", action=action, error=err)
+        run_command(action)
+    except (actions.ActionError, OSError) as e:
+        audit(user, ip, "power_failed", action=action, error=str(getattr(e, "message", e))[:200])
 
 
 @router.post("/{action}")

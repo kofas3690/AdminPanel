@@ -19,6 +19,11 @@ ALLOWED = {
 BOOT_ACTIONS = ("enable", "disable")
 
 
+# Reboot and shut down. Only these two, with these exact arguments (the sudo rule names them too).
+POWER_ACTIONS = {"reboot": "reboot", "poweroff": "poweroff"}
+BUSY = {"apt", "apt-get", "dpkg", "unattended-upgr"}      # process names that mean a software update is running
+
+
 class ActionError(Exception):
     def __init__(self, status, message):
         super().__init__(message)
@@ -68,6 +73,44 @@ def act_service(name, action):
             # An older sudo rule (copied before 1.2.0) does not know enable/disable yet.
             raise ActionError(500, "This machine's sudo rule is older. Run 'sudo adminpanel-setup remote-enable' there again")
         raise ActionError(500, err or "Command failed")
+    return True
+
+
+def update_running():
+    """True while apt, dpkg or unattended-upgrades is running (stopping one half way can break packages)."""
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return False
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                if f.read().strip() in BUSY:
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def check_power(action):
+    """Raises ActionError unless a reboot or shut down may start now. Starts nothing."""
+    if not isinstance(action, str) or action not in POWER_ACTIONS:
+        raise ActionError(403, "Not allowed")
+    if update_running():
+        raise ActionError(409, "A software update is running there. Wait until it has finished.")
+    r = _run(["sudo", "-n", "-l", SYSTEMCTL, "--no-block", POWER_ACTIONS[action]])
+    if r.returncode != 0:
+        # Checked before answering, because the real command only runs after the answer has been sent.
+        raise ActionError(500, "This machine's sudo rule is older. Run 'sudo adminpanel-setup remote-enable' there again")
+
+
+def run_power(action):
+    """Asks systemd to start the reboot or shut down. --no-block returns as soon as the job is queued."""
+    if not isinstance(action, str) or action not in POWER_ACTIONS:
+        raise ActionError(403, "Not allowed")
+    r = _run(["sudo", "-n", SYSTEMCTL, "--no-block", POWER_ACTIONS[action]])
+    if r.returncode != 0:
+        raise ActionError(500, (r.stderr or "").strip()[:200] or "Command failed")
     return True
 
 

@@ -43,6 +43,7 @@ async function loadHosts() {
   if (keep && hosts.some((h) => h.id === keep)) sel.value = keep;
   $("empty").hidden = hosts.length > 0;
   $("tbl").hidden = hosts.length === 0;
+  $("powerrow").hidden = hosts.length === 0;
   $("host").disabled = $("reload").disabled = hosts.length === 0;
   if (hosts.length) { loadInfo(); loadServices(); }
   else { $("info").hidden = true; closeLog(); }
@@ -155,3 +156,21 @@ $("reload").addEventListener("click", () => { loadInfo(); loadServices(); });
 $("logreload").addEventListener("click", () => { const h = current(); if (logOf && h) openLog(h, logOf.name); });
 $("logclose").addEventListener("click", closeLog);
 loadHosts();
+
+async function power(action) {
+  const h = current();
+  if (!h) return;
+  const label = action === "reboot" ? "Reboot" : "Shut down";
+  const typed = prompt(label + " " + h.name + " now?\nType its name (" + h.name + ") to confirm.");
+  if (typed === null) return;
+  say(label + "\u2026");
+  const r = await api("/api/remote/power/" + action, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ host: h.id, confirm: typed }) });
+  if (!r.ok) { say(await errText(r), true); return; }
+  let m = "Done";
+  try { m = (await r.json()).message || m; } catch (e) {}
+  say(m);
+}
+$("reboot").addEventListener("click", () => power("reboot"));
+$("poweroff").addEventListener("click", () => power("poweroff"));

@@ -18,7 +18,7 @@
 </style>
 
 <h1>Remote services</h1>
-<p class="muted">Start, stop or restart the allowed services on another machine, or choose whether they start at boot.
+<p class="muted">Start, stop or restart the allowed services on another machine, choose whether they start at boot, or reboot or shut down the whole machine.
 Set the machine up with <code>adminpanel-setup add-host</code>. The commands run on that machine through its bridge; nothing else can be run there.</p>
 
 <div class="row">
@@ -34,6 +34,13 @@ Set the machine up with <code>adminpanel-setup add-host</code>. The commands run
   <thead><tr><th>Name</th><th>State</th><th>Description</th><th>Actions</th></tr></thead>
   <tbody id="svc"></tbody>
 </table>
+
+<div id="powerrow" class="row" hidden>
+  <b>Power</b>
+  <button id="reboot">Reboot&hellip;</button>
+  <button id="poweroff" class="danger">Shut down&hellip;</button>
+  <span class="muted">You type the machine's name to confirm. A machine that is shut down must be started again from outside.</span>
+</div>
 
 <div id="logbox" hidden>
   <div class="row">
