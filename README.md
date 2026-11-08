@@ -104,7 +104,7 @@ Recommendations: keep port 8443 closed to the public internet where possible (us
 | ![Networking, Configuration: interfaces (1.6)](screenshots/network-configuration.png) | ![VPN tab (1.6)](screenshots/vpn.png) |
 | ![Proxy tab (1.6)](screenshots/proxy.png) | ![Servers (1.6)](screenshots/servers.png) |
 | ![Logs page (1.7)](screenshots/logs.png) | ![Alerts (1.8)](screenshots/alerts.png) |
-| ![Alerts, email settings (1.8.1)](screenshots/alerts-email.png) | |
+| ![Alerts, email settings (1.8.1)](screenshots/alerts-email.png) | ![History graphs (1.9)](screenshots/history.png) |
 
 ---
 
