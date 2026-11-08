@@ -2,7 +2,7 @@
   "use strict";
   const NAV = [
     ["System", [["Overview", "/"], ["Servers", "/fleet.html"], ["Remote services", "/remote.html"], ["Services", "/units.html"], ["Storage", "/storage.html"],
-                ["Networking", "/network.html"], ["VPN", "/vpn.html"], ["Proxy", "/proxy.html"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html"]]],
+                ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html"]]],
     ["Tools", [["Software updates", "/updates.html"], ["File manager", "/files.html"],
                ["Terminal", "/terminal.html"]]],
   ];
@@ -28,8 +28,10 @@
     if (text !== undefined) e.textContent = text;
     return e;
   };
+  // VPN and Proxy are tabs under Networking, so that sidebar entry stays highlighted on their pages.
+  const SUBPAGES = { "/vpn.html": "/network.html", "/proxy.html": "/network.html" };
   const isHere = (href) =>
-    location.pathname === href || (href === "/" && location.pathname === "/index.html");
+    location.pathname === href || SUBPAGES[location.pathname] === href || (href === "/" && location.pathname === "/index.html");
 
   function build() {
     // The old "Back" links are replaced by the sidebar.
@@ -79,10 +81,11 @@
     for (const [name, items] of NAV) {
       const g = { h: el("h4", "", name), links: [] };
       nav.appendChild(g.h);
-      for (const [label, href] of items) {
+      for (const [label, href, words] of items) {
         const a = el("a", isHere(href) ? "on" : "", label);
         a.href = href;
         nav.appendChild(a);
+        a.dataset.words = words || "";
         g.links.push(a);
       }
       groups.push(g);
@@ -93,7 +96,7 @@
       for (const g of groups) {
         let shown = 0;
         for (const a of g.links) {
-          a.hidden = q !== "" && !a.textContent.toLowerCase().includes(q);
+          a.hidden = q !== "" && !(a.textContent + " " + a.dataset.words).toLowerCase().includes(q);
           if (!a.hidden) shown++;
         }
         g.h.hidden = shown === 0;

@@ -133,7 +133,7 @@ button.primary:hover:not(:disabled), #apply:hover:not(:disabled), #keep:hover:no
 #connect:hover:not(:disabled), #esave:hover:not(:disabled), #add button:hover, #create button:hover, #pw button:hover {
   background: var(--accent-hover);
 }
-button.tab.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.tab.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 button.act { padding: 7px 14px; }
 button.danger { border-color: var(--crit); color: var(--crit); }
 button.danger:hover:not(:disabled) { background: var(--crit); color: #fff; }
@@ -222,3 +222,9 @@ body.login { visibility: visible; animation: none; display: grid; place-items: c
 .login-card input { width: 100%; margin-top: 6px; padding: 9px 11px; color: var(--text); }
 .login-card button { width: 100%; margin: 22px 0 0; padding: 10px; }
 .login-card #err { min-height: 1.4em; margin: 12px 0 0; }
+
+/* second level of the Networking tabs: Interfaces, VPN, Proxy (1.6.0) */
+.subtabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 16px; }
+.subtabs a { padding: 3px 12px; border: 1px solid var(--line2); border-radius: 999px; color: var(--text); text-decoration: none; font-size: 13px; }
+.subtabs a:hover { background: var(--hover); }
+.subtabs a.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }

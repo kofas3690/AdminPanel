@@ -21,7 +21,14 @@
   .tag { display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: 12px; background: var(--pill-off-bg); margin-right: 4px; }
 </style>
 
-<h1>VPN</h1>
+<h1>Network</h1>
+<p>
+  <a class="btn tab" href="/network.html">Activity</a><a class="btn tab active" href="/network.html#config">Configuration</a>
+</p>
+<p class="subtabs">
+  <a href="/network.html#config">Interfaces</a><a href="/vpn.html" class="on">VPN</a><a href="/proxy.html">Proxy</a>
+</p>
+<h2>VPN</h2>
 <p class="muted">WireGuard tunnels. Private keys are stored on the server and are never sent back to this page.</p>
 
 <div id="nowg" class="card" hidden>

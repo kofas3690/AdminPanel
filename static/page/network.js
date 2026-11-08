@@ -26,14 +26,21 @@ function btn(text, fn) {
 }
 
 /* ---------------- tabs ---------------- */
-document.querySelectorAll(".tab").forEach((b) => {
+document.querySelectorAll("button.tab").forEach((b) => {
   b.onclick = () => {
-    document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === b));
+    document.querySelectorAll("button.tab").forEach((x) => x.classList.toggle("active", x === b));
     $("tab-activity").hidden = b.dataset.tab !== "activity";
     $("tab-config").hidden = b.dataset.tab !== "config";
     if (b.dataset.tab === "activity") { loadConns(); drawGraph(); }
   };
 });
+
+// /network.html#config opens the Configuration tab (the VPN and Proxy pages link here)
+function openFromHash() {
+  if (location.hash === "#config") document.querySelector('button.tab[data-tab="config"]').click();
+}
+window.addEventListener("hashchange", openFromHash);
+openFromHash();
 
 /* ---------------- activity ---------------- */
 const hist = {};
