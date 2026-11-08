@@ -103,6 +103,7 @@ Recommendations: keep port 8443 closed to the public internet where possible (us
 | ![Overview with Power section and Reboot required chip (1.4)](screenshots/overview-power.png) | ![Remote services with Reboot and Shut down (1.5)](screenshots/remote-services.png) |
 | ![Networking, Configuration: interfaces (1.6)](screenshots/network-configuration.png) | ![VPN tab (1.6)](screenshots/vpn.png) |
 | ![Proxy tab (1.6)](screenshots/proxy.png) | ![Servers (1.6)](screenshots/servers.png) |
+| ![Logs page (1.7)](screenshots/logs.png) | |
 
 ---
 
