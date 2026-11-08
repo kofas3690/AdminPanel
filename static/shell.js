@@ -3,7 +3,8 @@
   const NAV = [
     ["System", [["Overview", "/"], ["Servers", "/fleet.html", "remote services ssh bridge reboot shut down panels"], ["Services", "/units.html"], ["Storage", "/storage.html"],
                 ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html"],
-                ["Logs", "/logs.html", "journal journalctl errors messages syslog"]]],
+                ["Logs", "/logs.html", "journal journalctl errors messages syslog"],
+                ["Alerts", "/alerts.html", "warnings disk full memory failed services problems notifications"]]],
     ["Tools", [["Software updates", "/updates.html"], ["File manager", "/files.html"],
                ["Terminal", "/terminal.html"]]],
   ];
@@ -58,6 +59,10 @@
       if (msg) alert(msg);
     };
     chip.hidden = true;
+    // Problems found on this machine (disk, memory, failed services); hidden when there are none.
+    const alertChip = el("a", "chip warn", "");
+    alertChip.href = "/alerts.html";
+    alertChip.hidden = true;
     const menu = el("div", "menu");
     const sess = el("button", "", "Session \u25be");
     const pop = el("div", "menu-pop");
@@ -67,7 +72,7 @@
     pop.append(who, out);
     menu.append(sess, pop);
     const themeBtn = window.AdminTheme ? window.AdminTheme.button() : null;
-    top.append(burger, brand, el("div", "spacer"), chip);
+    top.append(burger, brand, el("div", "spacer"), alertChip, chip);
     if (themeBtn) top.append(themeBtn);
     top.append(menu);
 
@@ -139,6 +144,23 @@
       who.textContent = "Signed in as " + d.panel_user;
       chip.hidden = !d.reboot_required;
     }).catch(() => {});
+
+    const checkAlerts = () => {
+      if (document.hidden) return;
+      fetch("/api/alerts").then(async (r) => {
+        if (!r.ok) return;
+        const a = await r.json(), total = a.critical + a.warning;
+        alertChip.hidden = total === 0;
+        if (total) {
+          alertChip.textContent = total + (total === 1 ? " alert" : " alerts");
+          alertChip.style.color = a.critical ? "var(--crit)" : "";
+          alertChip.style.borderColor = a.critical ? "var(--crit)" : "";
+          alertChip.title = a.critical + " critical, " + a.warning + " warning";
+        }
+      }).catch(() => {});
+    };
+    checkAlerts();
+    setInterval(checkAlerts, 60000);
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", build);

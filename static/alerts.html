@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alerts</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .al { display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; align-items: center; padding: 12px 14px;
+        border: 1px solid var(--line); border-left-width: 4px; border-radius: 8px; margin: 10px 0; }
+  .al.critical { border-left-color: var(--crit); }
+  .al.warning { border-left-color: var(--warn); }
+  .al .ic { font-size: 18px; text-align: center; }
+  .al.critical .ic { color: var(--crit); }
+  .al.warning .ic { color: var(--warn); }
+  .al .ti { font-weight: 600; }
+  .al .de { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .al .ac { display: flex; gap: 8px; }
+  .okbox { padding: 14px; border: 1px solid var(--line); border-radius: 8px; color: var(--ok); }
+  .setgrid { display: grid; grid-template-columns: 220px 90px; gap: 10px 12px; align-items: center; max-width: 360px; margin: 12px 0; }
+  .setgrid input { width: 80px; }
+  .mut { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+  .mut span { border: 1px solid var(--line); border-radius: 999px; padding: 2px 6px 2px 12px; font-size: 13px; }
+  .mut button { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 15px; }
+  #amsg { margin: 8px 0; min-height: 1.2em; }
+</style>
+
+<h1>Alerts</h1>
+<p class="muted">Problems found on this machine right now: a disk filling up, memory running out, and failed services. The list refreshes by itself, and the number also shows in the top bar on every page.</p>
+
+<div id="list"></div>
+
+<h2>Settings</h2>
+<div class="setgrid">
+  <label for="dw">Disk warning at (% full)</label><input id="dw" type="number" min="50" max="99">
+  <label for="dc">Disk critical at (% full)</label><input id="dc" type="number" min="51" max="100">
+  <label for="mw">Memory warning at (% used)</label><input id="mw" type="number" min="50" max="100">
+</div>
+<h3>Muted services</h3>
+<p class="muted">A muted service is not counted or shown above. Use this for a service you know is failing and have decided to ignore.</p>
+<div id="muted" class="mut"></div>
+<p><button id="save" class="primary">Save settings</button></p>
+<div id="amsg" class="muted"></div>
+
+<script src="/page/alerts.js"></script>
