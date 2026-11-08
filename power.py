@@ -42,9 +42,10 @@ def power(action: str, body: PowerBody, request: Request, tasks: BackgroundTasks
     host = socket.gethostname()
     if body.confirm.strip() != host:
         raise HTTPException(400, f"Type the machine's name ({host}) to confirm")
-    if update_running():
-        audit(user, ip, "power_refused", action=action, reason="update running")
-        raise HTTPException(409, "A software update is running. Wait until it has finished.")
+    busy = update_running()
+    if busy:
+        audit(user, ip, "power_refused", action=action, reason="update running", process=busy)
+        raise HTTPException(409, f"A software update is running ({busy}). Wait until it has finished.")
     audit(user, ip, "power_action", action=action, host=host)
     tasks.add_task(_do, action, user, ip)
     return {"ok": True, "message": "The machine is " + ("rebooting" if action == "reboot" else "shutting down") + " now."}

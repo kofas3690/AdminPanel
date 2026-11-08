@@ -22,6 +22,9 @@ BOOT_ACTIONS = ("enable", "disable")
 # Reboot and shut down. Only these two, with these exact arguments (the sudo rule names them too).
 POWER_ACTIONS = {"reboot": "reboot", "poweroff": "poweroff"}
 BUSY = {"apt", "apt-get", "dpkg", "unattended-upgr"}      # process names that mean a software update is running
+# Ubuntu keeps "unattended-upgrade-shutdown" running all the time, waiting for a shutdown signal. It has the
+# same short process name as a real unattended upgrade but is not an update, so it is told apart by its command line.
+IDLE_DAEMON = "unattended-upgrade-shutdown"
 
 
 class ActionError(Exception):
@@ -77,27 +80,35 @@ def act_service(name, action):
 
 
 def update_running():
-    """True while apt, dpkg or unattended-upgrades is running (stopping one half way can break packages)."""
+    """The name of the update process running (apt, apt-get, dpkg, unattended-upgr), or "" when none is.
+    Stopping an update half way can break packages."""
     try:
         pids = [p for p in os.listdir("/proc") if p.isdigit()]
     except OSError:
-        return False
+        return ""
     for pid in pids:
         try:
             with open(f"/proc/{pid}/comm") as f:
-                if f.read().strip() in BUSY:
-                    return True
+                name = f.read().strip()
+            if name not in BUSY:
+                continue
+            if name == "unattended-upgr":
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    if IDLE_DAEMON in f.read().decode("utf-8", "replace"):
+                        continue
+            return name
         except OSError:
             continue
-    return False
+    return ""
 
 
 def check_power(action):
     """Raises ActionError unless a reboot or shut down may start now. Starts nothing."""
     if not isinstance(action, str) or action not in POWER_ACTIONS:
         raise ActionError(403, "Not allowed")
-    if update_running():
-        raise ActionError(409, "A software update is running there. Wait until it has finished.")
+    busy = update_running()
+    if busy:
+        raise ActionError(409, f"A software update is running there ({busy}). Wait until it has finished.")
     r = _run(["sudo", "-n", "-l", SYSTEMCTL, "--no-block", POWER_ACTIONS[action]])
     if r.returncode != 0:
         # Checked before answering, because the real command only runs after the answer has been sent.
