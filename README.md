@@ -100,6 +100,9 @@ Recommendations: keep port 8443 closed to the public internet where possible (us
 | ![Systemd units](screenshots/systemd-units.png) | ![Storage](screenshots/storage-overview.png) |
 | ![Network](screenshots/network-management.png) | ![File manager](screenshots/file-manager.png) |
 | ![Updates](screenshots/system-updates.png) | ![Terminal](screenshots/terminal.png) |
+| ![Overview with Power section and Reboot required chip (1.4)](screenshots/overview-power.png) | ![Remote services with Reboot and Shut down (1.5)](screenshots/remote-services.png) |
+| ![Networking, Configuration: interfaces (1.6)](screenshots/network-configuration.png) | ![VPN tab (1.6)](screenshots/vpn.png) |
+| ![Proxy tab (1.6)](screenshots/proxy.png) | ![Servers (1.6)](screenshots/servers.png) |
 
 ---
 
