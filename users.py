@@ -32,9 +32,9 @@ def must(r):
     return r
 
 
-def do(event, request, user, name, *args, stdin=None):
+def do(event, request, user, name, *args, stdin=None, **extra):
     r = run(*args, stdin=stdin)
-    audit(user, request.client.host, event, target=name, ok=(r.returncode == 0))
+    audit(user, request.client.host, event, target=name, ok=(r.returncode == 0), **extra)
     must(r)
     return {"ok": True}
 
@@ -68,3 +68,36 @@ def unlock(body: Name, request: Request, user: str = Depends(current_user)):
 @router.post("/delete")
 def delete(body: Name, request: Request, user: str = Depends(current_user)):
     return do("user_delete", request, user, body.name, "delete", body.name)
+
+
+class Group(BaseModel):
+    group: str = Field(pattern=NAME_RE)
+
+
+class Member(Name, Group):
+    pass
+
+
+@router.get("/groups")
+def groups(user: str = Depends(current_user)):
+    return json.loads(must(run("groups")).stdout)
+
+
+@router.post("/groups/create")
+def group_create(body: Group, request: Request, user: str = Depends(current_user)):
+    return do("group_create", request, user, body.group, "mkgroup", body.group)
+
+
+@router.post("/groups/delete")
+def group_delete(body: Group, request: Request, user: str = Depends(current_user)):
+    return do("group_delete", request, user, body.group, "rmgroup", body.group)
+
+
+@router.post("/groups/add")
+def group_add(body: Member, request: Request, user: str = Depends(current_user)):
+    return do("group_add_member", request, user, body.name, "addgroup", body.name, body.group, group=body.group)
+
+
+@router.post("/groups/remove")
+def group_remove(body: Member, request: Request, user: str = Depends(current_user)):
+    return do("group_remove_member", request, user, body.name, "delgroup", body.name, body.group, group=body.group)

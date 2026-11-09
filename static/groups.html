@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Groups</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 4px 1px 8px; margin: 2px 4px 2px 0; border-radius: 10px; font-size: 12px; background: var(--code-bg); }
+  .chip.fixed { padding-right: 8px; }
+  .chip button { padding: 0 6px; min-width: 0; line-height: 18px; border-radius: 9px; }
+  .adder { display: inline-flex; gap: 6px; align-items: center; }
+</style>
+<p class="subtabs"><a href="/users.html">Users</a><a href="/logins.html">Login history</a><a href="/groups.html" class="on">Groups</a></p>
+<h1>Groups</h1>
+<p class="muted">Groups decide who can share files and access. Here you can create groups and choose which ordinary users belong to them.
+Groups that give control of the machine (<code>sudo</code>, <code>adm</code>, <code>docker</code> and similar), system groups and administrator accounts are shown locked: manage those from the console.</p>
+<p id="err" class="crit"></p>
+<p><label><input type="checkbox" id="showlocked"> Show locked groups</label> <span id="count" class="muted"></span></p>
+<div class="tbl-wrap"><table>
+  <thead><tr><th>Group</th><th>ID</th><th>Members</th><th></th></tr></thead>
+  <tbody id="rows"></tbody>
+</table></div>
+
+<h2>Create a group</h2>
+<form id="create">
+  <input id="gname" placeholder="group name" pattern="[a-z_][a-z0-9_\-]{0,31}" maxlength="32" required>
+  <button>Create</button>
+</form>
+<p class="muted">Lowercase letters, digits, _ and - (max 32). A new group starts empty.</p>
+<script src="/page/groups.js"></script>

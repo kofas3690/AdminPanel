@@ -6,6 +6,9 @@ NAME = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 ADMIN_GROUPS = {"sudo", "admin", "wheel"}
 UID_MIN, UID_MAX = 1000, 59999
 MIN_PW, MAX_PW = 12, 128
+# Groups that grant power over the whole machine. They are never offered, whatever their group number.
+PRIVILEGED = {"root", "sudo", "admin", "wheel", "adm", "shadow", "disk", "docker", "lxd", "libvirt", "kvm",
+              "systemd-journal", "staff", "adminpanel", "ssl-cert", "sudoers"}
 
 
 def die(msg):
@@ -70,6 +73,73 @@ def cmd_list():
     print(json.dumps(out))
 
 
+def user_group(name):
+    """A group the panel may change: an ordinary group number, not privileged, not an admin group."""
+    if not NAME.fullmatch(name):
+        die("invalid group name")
+    try:
+        g = grp.getgrnam(name)
+    except KeyError:
+        die("no such group")
+    if not UID_MIN <= g.gr_gid <= UID_MAX or name in PRIVILEGED or name in ADMIN_GROUPS:
+        die("system and administrator groups can't be changed here")
+    return g
+
+
+def cmd_groups():
+    users = {p.pw_name: p for p in pwd.getpwall() if UID_MIN <= p.pw_uid <= UID_MAX}
+    out = []
+    for g in sorted(grp.getgrall(), key=lambda g: g.gr_gid):
+        mem = sorted(set(m for m in g.gr_mem if m in users) | {n for n, p in users.items() if p.pw_gid == g.gr_gid})
+        if UID_MIN <= g.gr_gid <= UID_MAX or mem:
+            out.append({"name": g.gr_name, "gid": g.gr_gid, "members": mem,
+                        "locked": g.gr_name in PRIVILEGED or g.gr_name in ADMIN_GROUPS or not UID_MIN <= g.gr_gid <= UID_MAX,
+                        "primary": sorted(n for n, p in users.items() if p.pw_gid == g.gr_gid)})
+    print(json.dumps(out))
+
+
+def cmd_mkgroup(name):
+    if not NAME.fullmatch(name):
+        die("invalid group name")
+    if name in PRIVILEGED or name in ADMIN_GROUPS:
+        die("that name is reserved")
+    try:
+        grp.getgrnam(name)
+        die("that group already exists")
+    except KeyError:
+        pass
+    run("/usr/sbin/groupadd", name)
+    print("created")
+
+
+def cmd_rmgroup(name):
+    g = user_group(name)
+    if any(p.pw_gid == g.gr_gid for p in pwd.getpwall()):
+        die("some user has this as the main group")
+    if g.gr_mem:
+        die("remove the members first")
+    run("/usr/sbin/groupdel", name)
+    print("deleted")
+
+
+def cmd_addgroup(name, group):
+    p, g = managed(name), user_group(group)
+    if p.pw_gid == g.gr_gid or p.pw_name in g.gr_mem:
+        die("already a member")
+    run("/usr/bin/gpasswd", "-a", name, group)
+    print("added")
+
+
+def cmd_delgroup(name, group):
+    p, g = managed(name), user_group(group)
+    if p.pw_gid == g.gr_gid:
+        die("this is the user's main group")
+    if p.pw_name not in g.gr_mem:
+        die("not a member")
+    run("/usr/bin/gpasswd", "-d", name, group)
+    print("removed")
+
+
 def cmd_create(name):
     if not NAME.fullmatch(name):
         die("invalid user name")
@@ -117,7 +187,8 @@ def cmd_delete(name):
     print("deleted (home directory kept)")
 
 
-CMDS = {"create": cmd_create, "setpass": cmd_setpass, "lock": cmd_lock,
+CMDS2 = {"addgroup": cmd_addgroup, "delgroup": cmd_delgroup}
+CMDS = {"mkgroup": cmd_mkgroup, "rmgroup": cmd_rmgroup, "create": cmd_create, "setpass": cmd_setpass, "lock": cmd_lock,
         "unlock": cmd_unlock, "delete": cmd_delete}
 
 
@@ -125,9 +196,13 @@ def main():
     a = sys.argv[1:]
     if a == ["list"]:
         return cmd_list()
+    if a == ["groups"]:
+        return cmd_groups()
     if len(a) == 2 and a[0] in CMDS:
         return CMDS[a[0]](a[1])
-    die("usage: list | create|setpass|lock|unlock|delete NAME")
+    if len(a) == 3 and a[0] in CMDS2:
+        return CMDS2[a[0]](a[1], a[2])
+    die("usage: list | groups | create|setpass|lock|unlock|delete NAME | mkgroup|rmgroup GROUP | addgroup|delgroup NAME GROUP")
 
 
 main()
