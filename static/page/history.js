@@ -5,7 +5,7 @@
     { key: "cpu", title: "CPU", unit: "%", max: 100, series: [["cpu", "--accent", "CPU"]] },
     { key: "mem", title: "Memory", unit: "%", max: 100, series: [["mem", "--ok", "Used"]] },
     { key: "disk", title: "Disk (/)", unit: "%", max: 100, series: [["disk", "--warn", "Used"]] },
-    { key: "net", title: "Network", unit: "B/s", max: 0, series: [["rx", "--accent", "Down"], ["tx", "--ok", "Up"]] },
+    { key: "net", title: "Network", unit: "B/s", max: 0, smooth: true, fill: true, series: [["rx", "--accent", "Down"], ["tx", "--ok", "Up"]] },
   ];
   let DATA = { step: 60, points: [] };
   const box = document.getElementById("hist");
@@ -28,6 +28,26 @@
   }
   const niceMax = (v) => { if (v <= 0) return 1000; const p = Math.pow(10, Math.floor(Math.log10(v))); const m = v / p; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p; };
 
+  // Smooth curve through the points that never overshoots (monotone cubic): bezier control points per segment.
+  function curveSegments(p) {
+    const n = p.length, d = [], m = new Array(n).fill(0), out = [];
+    for (let i = 0; i < n - 1; i++) d.push((p[i + 1][1] - p[i][1]) / ((p[i + 1][0] - p[i][0]) || 1));
+    if (n > 1) { m[0] = d[0]; m[n - 1] = d[n - 2]; }
+    for (let i = 1; i < n - 1; i++) m[i] = d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) / 2;
+    for (let i = 0; i < n - 1; i++) {
+      if (d[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+      const a = m[i] / d[i], b = m[i + 1] / d[i], h = Math.hypot(a, b);
+      if (h > 3) { m[i] = 3 * a / h * d[i]; m[i + 1] = 3 * b / h * d[i]; }
+    }
+    for (let i = 0; i < n - 1; i++) {
+      const dx = (p[i + 1][0] - p[i][0]) / 3;
+      out.push([p[i][0] + dx, p[i][1] + m[i] * dx, p[i + 1][0] - dx, p[i + 1][1] - m[i + 1] * dx]);
+    }
+    return out;
+  }
+  const f1 = (v) => v.toFixed(1);
+  const curvePath = (p) => "M" + f1(p[0][0]) + "," + f1(p[0][1]) + curveSegments(p).map((c, i) => "C" + c.slice(0, 4).map(f1).join(",") + "," + f1(p[i + 1][0]) + "," + f1(p[i + 1][1])).join("");
+
   function draw(c, card) {
     const W = Math.max(240, card.clientWidth - 24), H = 130, L = 8, R = 8, T = 6, B = 18;
     const old = card.querySelector("svg"); if (old) old.remove();
@@ -45,22 +65,36 @@
     const lab = (txt, xx, yy, anchor) => { const e = svgEl("text", { x: xx, y: yy, "text-anchor": anchor, style: "fill:var(--muted)", "font-size": 10 }); e.textContent = txt; svg.appendChild(e); };
     lab(c.unit === "%" ? "100 %" : fmtBytes(max), L + 2, T + 9, "start");
     lab(fmtTime(t0), L, H - 4, "start"); lab(fmtTime(t1), W - R, H - 4, "end");
-    const gap = DATA.step * 2.5;
-    for (const [k, color] of c.series.map((s) => [s[0], s[1]])) {
-      let d = "", prev = null, area = [];
-      const flush = () => { if (area.length > 1 && c.series.length === 1) {
-        const a = "M" + x(area[0][0]) + "," + y(0) + area.map((p) => "L" + x(p[0]) + "," + y(p[1])).join("") + "L" + x(area[area.length - 1][0]) + "," + y(0) + "Z";
-        svg.appendChild(svgEl("path", { d: a, style: `fill:var(${color});opacity:.15` })); } area = []; };
+    const gap = DATA.step * 2.5, base = y(0);
+    c.series.forEach(([k, color], si) => {
+      // split into runs at gaps and missing values
+      const runs = []; let run = [], prev = null;
       for (const p of pts) {
         const v = p[k];
-        if (v == null || (prev != null && p.t - prev > gap)) { flush(); prev = null; }
+        if (v == null || (prev != null && p.t - prev > gap)) { if (run.length) runs.push(run); run = []; prev = null; }
         if (v == null) continue;
-        d += (prev == null ? "M" : "L") + x(p.t).toFixed(1) + "," + y(v).toFixed(1);
-        area.push([p.t, v]); prev = p.t;
+        run.push([x(p.t), y(v)]); prev = p.t;
       }
-      flush();
-      svg.appendChild(svgEl("path", { d, fill: "none", style: `stroke:var(${color})`, "stroke-width": 1.6, "stroke-linejoin": "round" }));
-    }
+      if (run.length) runs.push(run);
+      if (c.fill && si === 0) {
+        const id = "g-" + c.key + "-" + si;
+        const defs = svgEl("defs", {}); const lg = svgEl("linearGradient", { id, x1: 0, y1: 0, x2: 0, y2: 1 });
+        lg.appendChild(svgEl("stop", { offset: "0%", style: `stop-color:var(${color});stop-opacity:.32` }));
+        lg.appendChild(svgEl("stop", { offset: "100%", style: `stop-color:var(${color});stop-opacity:0` }));
+        defs.appendChild(lg); svg.appendChild(defs);
+        for (const r of runs) if (r.length > 1) {
+          const top = c.smooth && r.length > 2 ? curvePath(r) : "M" + r.map((q) => f1(q[0]) + "," + f1(q[1])).join("L");
+          svg.appendChild(svgEl("path", { d: top + "L" + f1(r[r.length - 1][0]) + "," + f1(base) + "L" + f1(r[0][0]) + "," + f1(base) + "Z", style: `fill:url(#${id})` }));
+        }
+      } else if (!c.fill && c.series.length === 1) {
+        for (const r of runs) if (r.length > 1) {
+          const top = "M" + r.map((q) => f1(q[0]) + "," + f1(q[1])).join("L");
+          svg.appendChild(svgEl("path", { d: top + "L" + f1(r[r.length - 1][0]) + "," + f1(base) + "L" + f1(r[0][0]) + "," + f1(base) + "Z", style: `fill:var(${color});opacity:.15` }));
+        }
+      }
+      const d = runs.map((r) => r.length === 1 ? "M" + f1(r[0][0]) + "," + f1(r[0][1]) + "h0.01" : c.smooth && r.length > 2 ? curvePath(r) : "M" + r.map((q) => f1(q[0]) + "," + f1(q[1])).join("L")).join("");
+      svg.appendChild(svgEl("path", { d, fill: "none", style: `stroke:var(${color})`, "stroke-width": 1.6, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    });
     const cur = svgEl("line", { y1: T, y2: H - B, style: "stroke:var(--muted)", "stroke-width": 1, visibility: "hidden" });
     svg.appendChild(cur);
     const tip = card.querySelector(".tip");

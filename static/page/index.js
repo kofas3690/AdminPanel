@@ -28,20 +28,55 @@ function setBar(id, pct) {
   bar.classList.toggle("crit", pct >= 95);
 }
 
-function spark(cv, series, colors, max) {
+// Smooth curve through the points that never overshoots (monotone cubic), as bezier control points per segment.
+function curveSegments(p) {
+  const n = p.length, d = [], m = new Array(n).fill(0), out = [];
+  for (let i = 0; i < n - 1; i++) d.push((p[i + 1][1] - p[i][1]) / ((p[i + 1][0] - p[i][0]) || 1));
+  if (n > 1) { m[0] = d[0]; m[n - 1] = d[n - 2]; }
+  for (let i = 1; i < n - 1; i++) m[i] = d[i - 1] * d[i] <= 0 ? 0 : (d[i - 1] + d[i]) / 2;
+  for (let i = 0; i < n - 1; i++) {
+    if (d[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+    const a = m[i] / d[i], b = m[i + 1] / d[i], h = Math.hypot(a, b);
+    if (h > 3) { m[i] = 3 * a / h * d[i]; m[i + 1] = 3 * b / h * d[i]; }
+  }
+  for (let i = 0; i < n - 1; i++) {
+    const dx = (p[i + 1][0] - p[i][0]) / 3;
+    out.push([p[i][0] + dx, p[i][1] + m[i] * dx, p[i + 1][0] - dx, p[i + 1][1] - m[i + 1] * dx]);
+  }
+  return out;
+}
+function rgba(ctx, color, a) {
+  ctx.fillStyle = color; const c = ctx.fillStyle;           // the browser turns any CSS colour into #rrggbb
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(c);
+  return m ? `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${a})` : c;
+}
+
+// opts.smooth draws curves instead of straight segments; opts.fill adds a soft fade under the first line.
+function spark(cv, series, colors, max, opts) {
+  opts = opts || {};
   const ctx = cv.getContext("2d"), w = cv.width, h = cv.height;
   ctx.clearRect(0, 0, w, h);
   const top = max || Math.max(1, ...series.flat());
   series.forEach((arr, k) => {
+    const pts = arr.map((v, i) => [arr.length < 2 ? 0 : (i / (arr.length - 1)) * (w - 1), h - 2 - (v / top) * (h - 4)]);
+    if (!pts.length) return;
     ctx.beginPath();
     ctx.strokeStyle = colors[k];
     ctx.lineWidth = 2;
-    arr.forEach((v, i) => {
-      const x = arr.length < 2 ? 0 : (i / (arr.length - 1)) * (w - 1);
-      const y = h - 2 - (v / top) * (h - 4);
-      if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
-    });
+    ctx.lineJoin = "round";
+    if (opts.smooth && pts.length > 2) {
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      curveSegments(pts).forEach((c, i) => ctx.bezierCurveTo(c[0], c[1], c[2], c[3], pts[i + 1][0], pts[i + 1][1]));
+    } else {
+      pts.forEach((p, i) => { if (i) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]); });
+    }
     ctx.stroke();
+    if (opts.fill && k === 0 && pts.length > 1) {
+      ctx.lineTo(pts[pts.length - 1][0], h); ctx.lineTo(pts[0][0], h); ctx.closePath();
+      const g = ctx.createLinearGradient(0, 0, 0, h);
+      g.addColorStop(0, rgba(ctx, colors[k], 0.30)); g.addColorStop(1, rgba(ctx, colors[k], 0));
+      ctx.fillStyle = g; ctx.fill();
+    }
   });
 }
 
@@ -78,7 +113,7 @@ async function tick() {
   }
   prev = { rx: d.net.rx, tx: d.net.tx, time: d.time };
   $("net").textContent = "\u2193 " + fmtBytes(rrx) + "/s";
-  spark($("netspark"), [H.rx, H.tx], [AdminTheme.css("--ok"), AdminTheme.css("--accent")]);
+  spark($("netspark"), [H.rx, H.tx], [AdminTheme.css("--accent"), AdminTheme.css("--ok")], 0, { smooth: true, fill: true });
   $("netinfo").textContent = "\u2191 " + fmtBytes(rtx) + "/s \u00b7 total \u2193 " + fmtBytes(d.net.rx) + " \u2191 " + fmtBytes(d.net.tx);
 
   const rows = [
