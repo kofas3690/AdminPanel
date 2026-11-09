@@ -4,14 +4,22 @@ Both lists are read only. Successful logins come from the system's own login rec
 /var/log/wtmp); failed SSH attempts come from the journal. Failed attempts are grouped by source address,
 so a password-guessing run shows up as one line with a count instead of hundreds of lines.
 """
-import json, re, subprocess, time
+import json, re, shutil, subprocess, time
 from datetime import datetime
 import psutil
 from fastapi import APIRouter, Depends, HTTPException
 from auth import current_user
 import journal
 
-LAST = "/usr/bin/last"
+LAST = None            # normally found on the system path; tests may set a full path
+LAST_HINT = ("The 'last' command is not installed, so past sign-ins can't be listed. Install it with: "
+             "sudo apt install util-linux-extra   (on older Ubuntu: sudo apt install util-linux)")
+
+
+def find_last():
+    if LAST:
+        return LAST
+    return shutil.which("last", path="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin")
 router = APIRouter(prefix="/api/logins")
 
 ISO = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d"
@@ -58,19 +66,21 @@ def parse_last(text):
 @router.get("/sessions")
 def sessions(limit: int = 200, user: str = Depends(current_user)):
     limit = max(10, min(limit, 1000))
+    now = [{"user": u.name, "tty": u.terminal or "", "host": u.host or "", "start": int(u.started)} for u in psutil.users()]
+    last = find_last()
+    if not last:
+        return {"now": now, "history": [], "note": LAST_HINT}
     try:
-        r = subprocess.run([LAST, "-w", "-F", "--time-format", "iso", "-n", str(limit)], capture_output=True,
+        r = subprocess.run([last, "-w", "-F", "--time-format", "iso", "-n", str(limit)], capture_output=True,
                            encoding="utf-8", errors="replace", timeout=15, env=journal.ENV, stdin=subprocess.DEVNULL)
     except FileNotFoundError:
-        raise HTTPException(500, "The 'last' command is not installed (sudo apt install util-linux)")
+        return {"now": now, "history": [], "note": LAST_HINT}
     except subprocess.TimeoutExpired:
         raise HTTPException(504, "Reading the login record took too long")
     if r.returncode != 0 and not r.stdout:
-        raise HTTPException(500, "Could not read the login record: " + (r.stderr or "").strip()[:150])
+        msg = (r.stderr or "").strip()[:150]
+        return {"now": now, "history": [], "note": "The login record could not be read" + (": " + msg if msg else ".")}
     history = [x for x in parse_last(r.stdout) if x["tty"] != "system"]
-    now = []
-    for u in psutil.users():
-        now.append({"user": u.name, "tty": u.terminal or "", "host": u.host or "", "start": int(u.started)})
     return {"now": now, "history": history}
 
 

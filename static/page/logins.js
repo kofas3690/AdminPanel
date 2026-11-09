@@ -52,6 +52,7 @@ function showHistory() {
 async function loadOk() {
   const d = await api("/api/logins/sessions");
   S.history = d.history;
+  $("note").textContent = d.note || "";
   const now = $("now"); now.textContent = "";
   if (!d.now.length) empty(now, 4, "Nobody is signed in on a terminal right now.");
   for (const n of d.now) row(now, [n.user, n.tty, n.host || "local", when(n.start)]);
