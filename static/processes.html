@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Processes</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  .pbar { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; margin: 10px 0; }
+  .pstats { display: flex; gap: 22px; flex-wrap: wrap; margin: 8px 0 4px; }
+  .pstats b { display: block; font-size: 20px; font-weight: 600; }
+  th.sort { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sort:hover { color: var(--text); }
+  td { white-space: nowrap; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.cmd { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 12px; color: var(--muted); }
+  td button { padding: 2px 8px; font-size: 12px; }
+  tr.zombie td { color: var(--warn, #d29922); }
+</style>
+<h1>Processes</h1>
+<p class="muted">Everything running on this machine. Ending a process is limited to ordinary programs: processes owned by root, the panel itself and core system processes are shown but can't be ended here. To stop a service, use the Services page.</p>
+<p id="err" class="crit"></p>
+<div class="pstats" id="stats"></div>
+<div class="pbar">
+  <input id="q" placeholder="Filter by name, user, number or command" maxlength="80" style="width:320px" aria-label="Filter processes">
+  <label><input type="checkbox" id="mine"> Hide root and system accounts</label>
+  <label><input type="checkbox" id="live" checked> Refresh every 3 seconds</label>
+  <span id="shown" class="muted"></span>
+</div>
+<div class="tbl-wrap"><table>
+  <thead><tr>
+    <th class="sort" data-k="pid">PID</th><th class="sort" data-k="name">Name</th><th class="sort" data-k="user">User</th>
+    <th class="sort" data-k="cpu">CPU %</th><th class="sort" data-k="mem">Memory</th><th class="sort" data-k="state">State</th>
+    <th class="sort" data-k="t">Started</th><th>Command</th><th></th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table></div>
+<p class="muted">CPU % is the share of one processor core, as in <code>top</code>, so a busy process on a 4-core machine can show up to 400.
+<b>End</b> asks the program to stop (it can save its work). <b>Force quit</b> stops it at once and should be used only when End has not worked.</p>
+<script src="/page/processes.js"></script>

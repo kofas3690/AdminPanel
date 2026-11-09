@@ -1,0 +1,85 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Processes page: end one ordinary process.
+
+The panel sends the process number and the moment the process started (from /proc). The helper opens a
+handle on the process first (pidfd), checks that it is still the same process, applies its own rules,
+and signals through the handle, so a number reused by another program in the meantime is never hit."""
+import os, pwd, signal, sys
+
+PROTECTED_NAMES = {"systemd", "sshd", "sshd-session", "dbus-daemon", "systemd-logind", "systemd-journal", "init"}
+PROTECTED_USERS = {"adminpanel", "root"}
+SIGNALS = {"TERM": signal.SIGTERM, "KILL": signal.SIGKILL}
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def read_proc(pid):
+    """(name, state, starttime ticks, uid) of a process, or None when it is gone."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            raw = f.read().decode("utf-8", "replace")
+        with open(f"/proc/{pid}/status") as f:
+            status = f.read()
+    except OSError:
+        return None
+    left, right = raw.index("("), raw.rindex(")")
+    name = raw[left + 1:right]
+    fields = raw[right + 2:].split()
+    uid = None
+    for line in status.splitlines():
+        if line.startswith("Uid:"):
+            uid = int(line.split()[1])
+    if uid is None:
+        return None
+    return name, fields[0], int(fields[19]), uid
+
+
+def cmd_signal(pid_s, started_s, sig_s):
+    if not (pid_s.isdigit() and started_s.isdigit()) or sig_s not in SIGNALS:
+        die("invalid request")
+    pid, started = int(pid_s), int(started_s)
+    if pid <= 1 or pid == os.getpid() or pid == os.getppid():
+        die("this process can't be changed")
+    try:
+        fd = os.pidfd_open(pid)
+    except OSError:
+        die("that process no longer exists")
+    try:
+        info = read_proc(pid)
+        if info is None:
+            die("that process no longer exists")
+        name, state, st, uid = info
+        if st != started:
+            die("that process has ended and the number was reused; refresh the list")
+        if state in ("Z", "X"):
+            die("that process has already ended")
+        try:
+            user = pwd.getpwuid(uid).pw_name
+        except KeyError:
+            user = str(uid)
+        if uid == 0 or user in PROTECTED_USERS:
+            die("processes owned by root or by the panel can't be ended here; use the Services page for services")
+        if name in PROTECTED_NAMES:
+            die("this is a core system process and can't be ended here")
+        info2 = read_proc(pid)                    # still the same process just before sending
+        if info2 is None or info2[2] != started:
+            die("that process has ended; refresh the list")
+        signal.pidfd_send_signal(fd, SIGNALS[sig_s])
+        print("sent", sig_s, "to", pid, name, user)
+    finally:
+        os.close(fd)
+
+
+def main():
+    a = sys.argv[1:]
+    if len(a) == 4 and a[0] == "signal":
+        return cmd_signal(a[1], a[2], a[3])
+    if a == ["check"]:
+        return print('{"ok": true}')
+    die("usage: signal PID STARTED TERM|KILL | check")
+
+
+main()

@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-proc signal *, /usr/local/sbin/adminpanel-proc check
