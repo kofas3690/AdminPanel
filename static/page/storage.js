@@ -25,9 +25,9 @@ document.querySelectorAll("#tabs button").forEach((b) => { b.onclick = () => set
 function setTab(t) {
   tab = t;
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.t === t));
-  for (const id of ["overview", "disks", "lvm"]) $("tab-" + id).hidden = id !== t;
-  $("lockbar").hidden = t === "overview";
-  if (t === "overview") loadOverview(); else { refreshLock(); loadInv(); }
+  for (const id of ["overview", "disks", "lvm", "health"]) $("tab-" + id).hidden = id !== t;
+  $("lockbar").hidden = t === "overview" || t === "health";
+  if (t === "overview") loadOverview(); else if (t === "health") loadHealth(false); else { refreshLock(); loadInv(); }
 }
 
 /* ---------------- overview ---------------- */

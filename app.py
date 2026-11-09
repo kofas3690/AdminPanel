@@ -27,6 +27,7 @@ from hardware import router as hardware_router
 from logins import router as logins_router
 from backup import router as backup_router
 from processes import router as processes_router
+from smart import router as smart_router, start as smart_start
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -63,6 +64,7 @@ app.include_router(hardware_router)
 app.include_router(logins_router)
 app.include_router(backup_router)
 app.include_router(processes_router)
+app.include_router(smart_router)
 
 app.include_router(fleet_router)
 app.include_router(health_router)
@@ -72,6 +74,7 @@ app.include_router(health_router)
 def _start_alert_mail():
     alerts_start()
     metrics_start()
+    smart_start()
 
 
 @app.get("/api/stats")

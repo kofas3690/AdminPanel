@@ -25,6 +25,7 @@
   .acts button { margin: 2px 6px 2px 0; padding: 4px 10px; }
   td.addr { white-space: pre-line; }
   small { color: var(--muted); }
+  .pill.warn { background: var(--warn); color: #1b1b1b; }
 </style>
 
 <h1>Storage</h1>
@@ -35,6 +36,7 @@
     <button data-t="overview" class="on">Overview</button>
     <button data-t="disks">Disks</button>
     <button data-t="lvm">LVM</button>
+    <button data-t="health">Health</button>
   </div>
 </div>
 
@@ -78,6 +80,19 @@
   <p class="muted">Logical volumes can be grown while mounted. Shrinking, snapshots and thin pools are not offered here.</p>
 </section>
 
+<!-- ---------------- health ---------------- -->
+<section id="tab-health" hidden>
+  <p><button id="hrefresh">Check again</button> <span id="hwhen" class="muted"></span></p>
+  <p id="herr" class="crit"></p>
+  <p id="hnote" class="warn" hidden></p>
+  <table>
+    <thead><tr><th>Disk</th><th>Model</th><th>Type</th><th>Size</th><th>Health</th><th>Temperature</th><th>Powered on</th><th>Wear</th></tr></thead>
+    <tbody id="hrows"></tbody>
+  </table>
+  <p class="muted">Health comes from the disk's own self-monitoring (SMART), read-only. It is refreshed about once an hour, and a failing or worn disk also appears on the Alerts page.
+  A disk can still fail without warning, so keep backups. Virtual and cloud disks usually don't report SMART.</p>
+</section>
+
 <dialog id="opdlg">
   <h3 id="optitle" style="margin-top:0"></h3>
   <div id="opbody"></div>
@@ -95,3 +110,4 @@
 </dialog>
 
 <script src="/page/storage.js"></script>
+<script src="/page/storage-health.js"></script>

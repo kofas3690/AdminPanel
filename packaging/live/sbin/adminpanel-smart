@@ -1,0 +1,121 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Storage > Health tab: read the health report (SMART) of every physical disk.
+
+Read only. It takes no disk names from the caller: it lists the disks itself and runs smartctl with a
+fixed set of options, so there is nothing for the caller to inject."""
+import json, os, re, subprocess, sys
+
+SMARTCTL = "/usr/sbin/smartctl"
+SYS_BLOCK = "/sys/block"
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+DEV_RE = re.compile(r"(sd[a-z]{1,2}|vd[a-z]{1,2}|xvd[a-z]{1,2}|hd[a-z]|nvme\d{1,3}n\d{1,3}|mmcblk\d{1,2})")
+ATA_WATCH = {5: "reallocated sectors", 197: "sectors waiting to be reallocated", 198: "sectors that could not be read"}
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def disks():
+    try:
+        names = sorted(n for n in os.listdir(SYS_BLOCK) if DEV_RE.fullmatch(n))
+    except OSError:
+        return []
+    return names
+
+
+def getp(d, *path, default=None):
+    for k in path:
+        if not isinstance(d, dict) or k not in d:
+            return default
+        d = d[k]
+    return d
+
+
+def summarize(name, data, rc):
+    row = {"device": name, "model": getp(data, "model_name", default="") or "", "firmware": getp(data, "firmware_version", default="") or "",
+           "size": getp(data, "user_capacity", "bytes", default=0) or 0, "status": "unavailable", "reasons": [],
+           "temp": getp(data, "temperature", "current"), "hours": getp(data, "power_on_time", "hours"),
+           "cycles": getp(data, "power_cycle_count"), "kind": "disk", "wear": None}
+    msgs = " ".join(m.get("string", "") for m in getp(data, "smartctl", "messages", default=[]) if isinstance(m, dict))
+    dtype = getp(data, "device", "type", default="")
+    rot = getp(data, "rotation_rate")
+    row["kind"] = "nvme" if dtype == "nvme" else ("ssd" if rot == 0 else "hdd" if rot else "disk")
+    if "STANDBY" in msgs.upper():
+        row["status"] = "asleep"
+        row["reasons"] = ["The disk is in standby; it was not woken to read its health. Check again when it is in use."]
+        return row
+    if not getp(data, "smart_support", "available", default=False) or getp(data, "smart_status", "passed") is None:
+        row["reasons"] = [("SMART is not available for this disk" + (" (usual for virtual and cloud disks)." if not row["model"] or "QEMU" in row["model"].upper()
+                           or "VIRTUAL" in row["model"].upper() or dtype in ("scsi",) else "."))]
+        if rc & 2 and msgs:
+            row["reasons"] = [msgs[:160]]
+        return row
+    failing, warn = [], []
+    if getp(data, "smart_status", "passed") is False:
+        failing.append("The disk reports that it is failing its own health check.")
+    nv = getp(data, "nvme_smart_health_information_log")
+    if isinstance(nv, dict):
+        if nv.get("critical_warning"):
+            failing.append("The drive raised a critical warning (code %s)." % nv.get("critical_warning"))
+        used = nv.get("percentage_used")
+        if isinstance(used, int):
+            row["wear"] = used
+            if used >= 100:
+                warn.append("The drive has used up its rated lifetime (%d%%)." % used)
+            elif used >= 90:
+                warn.append("The drive is %d%% worn." % used)
+        sp, th = nv.get("available_spare"), nv.get("available_spare_threshold")
+        if isinstance(sp, int) and isinstance(th, int) and sp < th:
+            warn.append("Spare capacity (%d%%) is below the drive's threshold (%d%%)." % (sp, th))
+        if nv.get("media_errors"):
+            warn.append("%s media errors recorded." % nv["media_errors"])
+        row["temp"] = nv.get("temperature", row["temp"])
+        row["hours"] = nv.get("power_on_hours", row["hours"])
+        row["cycles"] = nv.get("power_cycles", row["cycles"])
+    for a in getp(data, "ata_smart_attributes", "table", default=[]) or []:
+        if isinstance(a, dict) and a.get("id") in ATA_WATCH:
+            v = getp(a, "raw", "value", default=0)
+            if isinstance(v, int) and v > 0:
+                warn.append("%d %s." % (v, ATA_WATCH[a["id"]]))
+    limit = 75 if row["kind"] == "nvme" else 60
+    if isinstance(row["temp"], int) and row["temp"] >= limit:
+        warn.append("Temperature is high (%d °C)." % row["temp"])
+    es = getp(data, "smartctl", "exit_status", default=rc) or 0
+    if es & 64:
+        warn.append("The disk's error log contains entries.")
+    if es & 128:
+        warn.append("A self-test on this disk reported errors.")
+    row["status"] = "failing" if failing else "warning" if warn else "ok"
+    row["reasons"] = failing + warn
+    return row
+
+
+def cmd_report():
+    if not os.path.exists(SMARTCTL):
+        print(json.dumps({"installed": False, "disks": []}))
+        return
+    out = []
+    for n in disks():
+        try:
+            r = subprocess.run([SMARTCTL, "-j", "-i", "-H", "-A", "-n", "standby", "/dev/" + n], capture_output=True,
+                               text=True, env=ENV, stdin=subprocess.DEVNULL, timeout=40)
+            data = json.loads(r.stdout or "{}")
+            rc = r.returncode
+        except (subprocess.TimeoutExpired, ValueError):
+            data, rc = {}, 0
+        out.append(summarize(n, data, rc))
+    print(json.dumps({"installed": True, "disks": out}))
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["report"]:
+        return cmd_report()
+    if a == ["check"]:
+        return print(json.dumps({"ok": True, "smartctl": os.path.exists(SMARTCTL)}))
+    die("usage: report | check")
+
+
+main()

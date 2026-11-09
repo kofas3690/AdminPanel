@@ -14,6 +14,7 @@ from audit import audit
 from store import PersistentDict
 import units
 import mailer
+import smart
 
 router = APIRouter(prefix="/api/alerts")
 store = PersistentDict("alert_settings")
@@ -77,9 +78,24 @@ def failed_alerts(cfg):
     return out
 
 
+def smart_alerts(cfg):
+    """Disks whose own health report says they are failing or showing warning signs (from the hourly reading)."""
+    d = smart.cached() or {}
+    out = []
+    for x in d.get("disks", []):
+        if x.get("status") not in ("failing", "warning"):
+            continue
+        bad = x["status"] == "failing"
+        out.append({"id": "smart:" + x["device"], "severity": "critical" if bad else "warning", "kind": "disk-health",
+                    "title": f"Disk {x['device']} " + ("is failing" if bad else "shows warning signs"),
+                    "detail": " ".join(x.get("reasons", []))[:300] + (" Back up its data now." if bad else ""),
+                    "link": "/storage.html#health"})
+    return out
+
+
 def scan():
     cfg = settings()
-    found = disk_alerts(cfg) + memory_alerts(cfg) + failed_alerts(cfg)
+    found = disk_alerts(cfg) + memory_alerts(cfg) + failed_alerts(cfg) + smart_alerts(cfg)
     active = [a for a in found if not a.get("muted")]
     active.sort(key=lambda a: (ORDER[a["severity"]], a["title"]))
     return cfg, active, [a for a in found if a.get("muted")]
