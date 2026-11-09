@@ -17,8 +17,8 @@ say() { echo "==> $*"; }
 [[ "$VERSION" =~ ^[0-9][A-Za-z0-9.+~-]*$ ]] || die "invalid version: $VERSION"
 command -v dpkg-deb >/dev/null || die "dpkg-deb is required. Build this on Ubuntu or Debian."
 
-MODULES=(paths power mailer alerts metrics hardware logins app auth audit store system services logs updates firewall users terminal storage storage_admin fs network security journal units userunits create_user enroll_2fa sshkeys loginlock fleet actions bridge remote)
-HELPERS=(apt ufw users net disk userunits units)
+MODULES=(paths power mailer alerts metrics hardware logins backup app auth audit store system services logs updates firewall users terminal storage storage_admin fs network security journal units userunits create_user enroll_2fa sshkeys loginlock fleet actions bridge remote)
+HELPERS=(apt ufw users net disk userunits units backup)
 
 say "Checking the source files"
 for m in "${MODULES[@]}"; do [ -f "$ROOT/$m.py" ] || die "missing $m.py in $ROOT"; done
@@ -105,7 +105,7 @@ PY
 
 install -m 755 "$FILES/usr/sbin/adminpanel-setup" "$PKG/usr/sbin/adminpanel-setup"
 install -m 755 "$FILES/usr/sbin/adminpanel-selfcheck" "$PKG/usr/sbin/adminpanel-selfcheck"
-install -m 644 "$FILES"/usr/lib/systemd/system/*.service "$PKG/usr/lib/systemd/system/"
+install -m 644 "$FILES"/usr/lib/systemd/system/*.service "$FILES"/usr/lib/systemd/system/*.timer "$PKG/usr/lib/systemd/system/"
 cp -a "$FILES/usr/share/adminpanel/." "$PKG/usr/share/adminpanel/"
 if [ -f "$LIVE/requirements.lock" ]; then install -m 644 "$LIVE/requirements.lock" "$PKG/usr/share/adminpanel/requirements.lock"
 else echo "NOTE: no packaging/live/requirements.lock. The newest compatible packages will be installed."; fi

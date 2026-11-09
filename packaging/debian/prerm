@@ -4,6 +4,7 @@ case "$1" in
 remove|deconfigure)
     if [ -d /run/systemd/system ]; then
         systemctl stop adminpanel.service >/dev/null 2>&1 || true
+        systemctl stop adminpanel-backup.timer >/dev/null 2>&1 || true
     fi
     ;;
 esac

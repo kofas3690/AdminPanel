@@ -1,0 +1,8 @@
+[Unit]
+Description=AdminPanel backup (run now)
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/usr/local/sbin/adminpanel-backup run

@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-backup status, /usr/local/sbin/adminpanel-backup set, /usr/local/sbin/adminpanel-backup start, /usr/local/sbin/adminpanel-backup verify *, /usr/local/sbin/adminpanel-backup delete *

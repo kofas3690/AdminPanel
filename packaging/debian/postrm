@@ -2,12 +2,13 @@
 set -e
 case "$1" in
 remove|purge)
-    for n in adminpanel adminpanel-apt adminpanel-ufw adminpanel-users adminpanel-net adminpanel-disk adminpanel-userunits adminpanel-units; do
+    for n in adminpanel adminpanel-apt adminpanel-ufw adminpanel-users adminpanel-net adminpanel-disk adminpanel-userunits adminpanel-units adminpanel-backup; do
         rm -f "/etc/sudoers.d/$n"
     done
     rm -f /etc/nginx/sites-enabled/adminpanel.conf
     rm -f /etc/systemd/system/multi-user.target.wants/adminpanel.service \
-          /etc/systemd/system/multi-user.target.wants/adminpanel-net-recover.service
+          /etc/systemd/system/multi-user.target.wants/adminpanel-net-recover.service \
+          /etc/systemd/system/timers.target.wants/adminpanel-backup.timer
     if [ -d /run/systemd/system ]; then
         systemctl daemon-reload || true
         if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then

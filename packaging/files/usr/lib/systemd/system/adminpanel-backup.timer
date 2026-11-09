@@ -1,0 +1,11 @@
+[Unit]
+Description=Check every hour whether an AdminPanel backup is due
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=300
+Persistent=true
+Unit=adminpanel-backup-check.service
+
+[Install]
+WantedBy=timers.target

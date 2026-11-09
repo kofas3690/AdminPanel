@@ -1,0 +1,249 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Backups page.
+
+Archives are written to one fixed folder that only root can read, so the panel can list and delete
+them but never read their contents. Which folders are saved, how often, and how many are kept is a small
+settings file written only by this helper after checking every value."""
+import fcntl, json, os, re, shutil, subprocess, sys, time
+
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+DEST = "/var/backups/adminpanel"
+STATE = "/var/lib/adminpanel"
+CONF = STATE + "/backup.json"
+LAST = STATE + "/backup-last.json"
+LOCK = STATE + "/backup.lock"
+SYSTEMCTL = "/usr/bin/systemctl"
+TAR = "/usr/bin/tar"
+NAME_RE = re.compile(r"adminpanel-backup-\d{8}-\d{6}\.tar\.gz")
+DENY = ("/proc", "/sys", "/dev", "/run", "/var/backups")
+MIN_FREE = 500 * 1024 * 1024
+INTERVAL = {"daily": 23 * 3600, "weekly": 6 * 86400 + 23 * 3600}
+DEFAULT = {"schedule": "off", "hour": 3, "keep": 7, "sources": ["/etc", "/home"]}
+
+
+LASTMSG = [""]
+
+
+def die(msg, code=2):
+    LASTMSG[0] = msg
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def check_source(p):
+    if not isinstance(p, str) or not 1 < len(p) <= 4096 or "\0" in p or "\n" in p:
+        die("invalid folder: " + repr(p)[:80])
+    if not p.startswith("/") or os.path.normpath(p) != p:
+        die("use a full path without .. or a trailing slash: " + p)
+    if not os.path.lexists(p):
+        die("this path does not exist: " + p)
+    real = os.path.realpath(p)
+    for d in DENY:
+        if real == d or real.startswith(d + "/") or p == d or p.startswith(d + "/"):
+            die("this location can't be backed up: " + p)
+    return p
+
+
+def load():
+    try:
+        with open(CONF) as f:
+            c = json.load(f)
+        out = dict(DEFAULT)
+        out.update({k: c[k] for k in DEFAULT if k in c})
+        return out
+    except (OSError, ValueError):
+        return dict(DEFAULT)
+
+
+def cmd_set():
+    try:
+        c = json.loads(sys.stdin.read(65536))
+    except ValueError:
+        die("invalid settings")
+    if not isinstance(c, dict) or set(c) != set(DEFAULT):
+        die("invalid settings")
+    if c["schedule"] not in ("off", "daily", "weekly"):
+        die("schedule must be off, daily or weekly")
+    if not isinstance(c["hour"], int) or isinstance(c["hour"], bool) or not 0 <= c["hour"] <= 23:
+        die("hour must be 0 to 23")
+    if not isinstance(c["keep"], int) or isinstance(c["keep"], bool) or not 1 <= c["keep"] <= 60:
+        die("keep must be 1 to 60")
+    if not isinstance(c["sources"], list) or not 1 <= len(c["sources"]) <= 20:
+        die("choose 1 to 20 folders")
+    seen = []
+    for p in c["sources"]:
+        if check_source(p) not in seen:
+            seen.append(p)
+    c["sources"] = seen
+    os.makedirs(STATE, exist_ok=True)
+    tmp = CONF + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(c, f)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, CONF)
+    print("saved")
+
+
+def archives():
+    out = []
+    try:
+        names = sorted(n for n in os.listdir(DEST) if NAME_RE.fullmatch(n))
+    except OSError:
+        return out
+    for n in names:
+        try:
+            st = os.stat(os.path.join(DEST, n))
+            out.append({"name": n, "size": st.st_size, "t": int(st.st_mtime)})
+        except OSError:
+            pass
+    return out
+
+
+def running():
+    os.makedirs(STATE, exist_ok=True)
+    fd = os.open(LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return None, True
+    return fd, False
+
+
+def last():
+    try:
+        with open(LAST) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def cmd_status():
+    fd, busy = running()
+    if fd is not None:
+        os.close(fd)
+    try:
+        u = shutil.disk_usage(DEST if os.path.isdir(DEST) else "/var")
+        free, total = u.free, u.total
+    except OSError:
+        free = total = 0
+    print(json.dumps({"config": load(), "archives": archives(), "free": free, "total": total,
+                      "last": last(), "running": busy}))
+
+
+def record(ok, **kw):
+    d = {"t": int(time.time()), "ok": ok, **kw}
+    tmp = LAST + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, LAST)
+
+
+def make_backup():
+    c = load()
+    fd, busy = running()
+    if busy:
+        die("a backup is already running", 3)
+    try:
+        os.umask(0o077)
+        os.makedirs(DEST, mode=0o700, exist_ok=True)
+        os.chmod(DEST, 0o700)
+        try:
+            for p in c["sources"]:
+                check_source(p)
+            if shutil.disk_usage(DEST).free < MIN_FREE:
+                die("less than 500 MB free in " + DEST)
+        except SystemExit:
+            record(False, error=LASTMSG[0][:200])
+            raise
+        name = "adminpanel-backup-" + time.strftime("%Y%m%d-%H%M%S") + ".tar.gz"
+        tmp = os.path.join(DEST, name + ".partial")
+        rel = [p.lstrip("/") for p in c["sources"]]
+        r = subprocess.run([TAR, "--one-file-system", "--warning=no-file-changed", "--exclude=" + DEST.lstrip("/"),
+                            "-czf", tmp, "-C", "/", "--", *rel], capture_output=True, text=True, env=ENV,
+                           stdin=subprocess.DEVNULL, timeout=6 * 3600)
+        if r.returncode not in (0, 1):                      # 1 = a file changed while it was read: still usable
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            err = (r.stderr or "tar failed").strip().splitlines()[-1][:200]
+            record(False, error=err)
+            die("backup failed: " + err, 1)
+        final = os.path.join(DEST, name)
+        os.replace(tmp, final)
+        os.chmod(final, 0o600)
+        size = os.stat(final).st_size
+        names = [a["name"] for a in archives()]
+        for old in names[:-c["keep"]]:
+            try:
+                os.unlink(os.path.join(DEST, old))
+            except OSError:
+                pass
+        warn = (r.stderr or "").strip().splitlines()[:1]
+        record(True, name=name, size=size, warning=warn[0][:200] if warn else "")
+        print("backup written:", name, size)
+    finally:
+        os.close(fd)
+
+
+def cmd_run():
+    make_backup()
+
+
+def cmd_run_scheduled():
+    c = load()
+    if c["schedule"] == "off":
+        return
+    now = time.localtime()
+    if now.tm_hour < c["hour"]:
+        return
+    a = archives()
+    if a and time.time() - a[-1]["t"] < INTERVAL[c["schedule"]]:
+        return
+    make_backup()
+
+
+def cmd_start():
+    if not load()["sources"]:
+        die("no folders chosen")
+    r = subprocess.run([SYSTEMCTL, "start", "--no-block", "adminpanel-backup.service"], capture_output=True,
+                       text=True, env=ENV, stdin=subprocess.DEVNULL, timeout=30)
+    if r.returncode != 0:
+        die((r.stderr or "could not start the backup").strip()[:200])
+    print("started")
+
+
+def known(name):
+    if not NAME_RE.fullmatch(name) or not os.path.isfile(os.path.join(DEST, name)):
+        die("no such backup")
+    return os.path.join(DEST, name)
+
+
+def cmd_verify(name):
+    p = known(name)
+    r = subprocess.run([TAR, "-tzf", p], capture_output=True, text=True, env=ENV, stdin=subprocess.DEVNULL,
+                       timeout=3600)
+    if r.returncode != 0:
+        die("this archive is damaged: " + (r.stderr or "").strip()[:150])
+    print(json.dumps({"ok": True, "entries": len(r.stdout.splitlines())}))
+
+
+def cmd_delete(name):
+    os.unlink(known(name))
+    print("deleted")
+
+
+def main():
+    a = sys.argv[1:]
+    one = {"status": cmd_status, "set": cmd_set, "run": cmd_run, "run-scheduled": cmd_run_scheduled, "start": cmd_start}
+    two = {"verify": cmd_verify, "delete": cmd_delete}
+    if len(a) == 1 and a[0] in one:
+        return one[a[0]]()
+    if len(a) == 2 and a[0] in two:
+        return two[a[0]](a[1])
+    die("usage: status | set | start | run | run-scheduled | verify NAME | delete NAME")
+
+
+main()

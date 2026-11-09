@@ -25,6 +25,7 @@ from alerts import router as alerts_router, start_watcher as alerts_start
 from metrics import router as metrics_router, start as metrics_start
 from hardware import router as hardware_router
 from logins import router as logins_router
+from backup import router as backup_router
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -59,6 +60,7 @@ app.include_router(alerts_router)
 app.include_router(metrics_router)
 app.include_router(hardware_router)
 app.include_router(logins_router)
+app.include_router(backup_router)
 
 app.include_router(fleet_router)
 app.include_router(health_router)

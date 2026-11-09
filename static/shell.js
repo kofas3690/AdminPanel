@@ -1,7 +1,7 @@
 (function () {
   "use strict";
   const NAV = [
-    ["System", [["Overview", "/"], ["Servers", "/fleet.html", "remote services ssh bridge reboot shut down panels"], ["Services", "/units.html"], ["Storage", "/storage.html"],
+    ["System", [["Overview", "/"], ["Servers", "/fleet.html", "remote services ssh bridge reboot shut down panels"], ["Services", "/units.html"], ["Storage", "/storage.html"], ["Backups", "/backups.html", "backup restore copy archive tar schedule"],
                 ["Hardware", "/hardware.html", "cpu processor memory ram dimm disks pci usb temperature sensors gpu model"],
                 ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html", "login history sign-in failed attempts ssh brute force users groups members"],
                 ["Logs", "/logs.html", "journal journalctl errors messages syslog"],

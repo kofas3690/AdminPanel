@@ -94,6 +94,7 @@ configure)
         systemctl daemon-reload || true
         systemctl enable adminpanel-net-recover.service >/dev/null 2>&1 || true
         systemctl enable adminpanel.service >/dev/null 2>&1 || true
+        systemctl enable --now adminpanel-backup.timer >/dev/null 2>&1 || true
         if [ -n "$2" ] && [ -z "$MIGRATED" ]; then
             systemctl try-restart adminpanel.service || true
         else
