@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Login history</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; background: var(--code-bg); }
+  .pill.live { background: var(--ok); color: #fff; }
+  .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+</style>
+<p class="subtabs"><a href="/users.html">Users</a><a href="/logins.html" class="on">Login history</a></p>
+<h1>Login history</h1>
+<p class="muted">Who signed in to this machine, and who tried and failed. Read only: this page changes nothing.</p>
+<p id="err" class="crit"></p>
+<p>
+  <button class="tab active" data-tab="ok">Sign-ins</button>
+  <button class="tab" data-tab="bad">Failed attempts</button>
+</p>
+
+<section id="tab-ok">
+  <h2>Signed in now</h2>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>User</th><th>Terminal</th><th>From</th><th>Since</th></tr></thead>
+    <tbody id="now"></tbody>
+  </table></div>
+  <h2>History</h2>
+  <div class="toolbar">
+    <input id="fuser" placeholder="Filter by user or address" maxlength="64" aria-label="Filter sign-ins">
+    <span id="okcount" class="muted"></span>
+  </div>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>User</th><th>Terminal</th><th>From</th><th>Signed in</th><th>Duration</th></tr></thead>
+    <tbody id="hist"></tbody>
+  </table></div>
+</section>
+
+<section id="tab-bad" hidden>
+  <div class="toolbar">
+    <label>Period <select id="rng"><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select></label>
+    <span id="badcount" class="muted"></span>
+  </div>
+  <h2>By source address</h2>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Address</th><th>Attempts</th><th>User names tried</th><th>Last attempt</th></tr></thead>
+    <tbody id="byip"></tbody>
+  </table></div>
+  <h2>Latest attempts</h2>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th>Time</th><th>User name</th><th>Address</th></tr></thead>
+    <tbody id="recent"></tbody>
+  </table></div>
+  <p class="muted">Counts SSH password and key failures from the system journal. A long list from one address is
+  usually an automatic guessing run; the Firewall page can block it.</p>
+</section>
+<script src="/page/logins.js"></script>

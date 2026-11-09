@@ -3,7 +3,7 @@
   const NAV = [
     ["System", [["Overview", "/"], ["Servers", "/fleet.html", "remote services ssh bridge reboot shut down panels"], ["Services", "/units.html"], ["Storage", "/storage.html"],
                 ["Hardware", "/hardware.html", "cpu processor memory ram dimm disks pci usb temperature sensors gpu model"],
-                ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html"],
+                ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html", "login history sign-in failed attempts ssh brute force users"],
                 ["Logs", "/logs.html", "journal journalctl errors messages syslog"],
                 ["Alerts", "/alerts.html", "warnings disk full memory failed services problems notifications"]]],
     ["Tools", [["Software updates", "/updates.html"], ["File manager", "/files.html"],
@@ -32,7 +32,7 @@
     return e;
   };
   // VPN and Proxy are tabs under Networking, so that sidebar entry stays highlighted on their pages.
-  const SUBPAGES = { "/vpn.html": "/network.html", "/proxy.html": "/network.html", "/remote.html": "/fleet.html" };
+  const SUBPAGES = { "/vpn.html": "/network.html", "/proxy.html": "/network.html", "/remote.html": "/fleet.html", "/logins.html": "/users.html" };
   const isHere = (href) =>
     location.pathname === href || SUBPAGES[location.pathname] === href || (href === "/" && location.pathname === "/index.html");
 
