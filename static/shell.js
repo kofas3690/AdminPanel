@@ -2,6 +2,7 @@
   "use strict";
   const NAV = [
     ["System", [["Overview", "/"], ["Servers", "/fleet.html", "remote services ssh bridge reboot shut down panels"], ["Services", "/units.html"], ["Storage", "/storage.html"],
+                ["Hardware", "/hardware.html", "cpu processor memory ram dimm disks pci usb temperature sensors gpu model"],
                 ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html"],
                 ["Logs", "/logs.html", "journal journalctl errors messages syslog"],
                 ["Alerts", "/alerts.html", "warnings disk full memory failed services problems notifications"]]],

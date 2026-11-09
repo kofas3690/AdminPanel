@@ -1,0 +1,68 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hardware</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .hwnote { margin: 6px 0; }
+  table.kv th { width: 200px; }
+  .tree { color: var(--muted); }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  .tmp { font-variant-numeric: tabular-nums; }
+  .tmp.warn { color: var(--warn); font-weight: 600; }
+  .tmp.crit { color: var(--crit); font-weight: 600; }
+  #pcifilter { width: 280px; max-width: 100%; margin: 4px 0 8px; }
+  .scroll { max-height: 420px; overflow: auto; }
+</style>
+
+<h1>Hardware</h1>
+<p class="muted">What this machine is made of. Read only: nothing here changes the machine.</p>
+<p><button id="refresh">Refresh</button> <span id="hwmsg" class="muted"></span></p>
+
+<h2>System</h2>
+<table class="kv"><tbody id="machine"></tbody></table>
+
+<h2>Processor</h2>
+<table class="kv"><tbody id="cpu"></tbody></table>
+<div id="cpunote" class="muted hwnote"></div>
+
+<h2>Memory</h2>
+<table class="kv"><tbody id="mem"></tbody></table>
+<table id="modtable" hidden>
+  <thead><tr><th>Slot</th><th class="num">Size</th><th>Type</th><th>Speed</th><th>Maker</th><th>Form</th></tr></thead>
+  <tbody id="modules"></tbody>
+</table>
+<div id="memnote" class="muted hwnote"></div>
+
+<h2>Disks</h2>
+<table id="disktable">
+  <thead><tr><th>Device</th><th>Type</th><th class="num">Size</th><th>Model</th><th>Bus</th><th>File system</th><th>Mounted at</th></tr></thead>
+  <tbody id="disks"></tbody>
+</table>
+<div id="disknote" class="muted hwnote"></div>
+
+<h2>Temperatures and sensors</h2>
+<table id="temptable" hidden>
+  <thead><tr><th>Sensor</th><th class="num">Now</th><th class="num">High</th><th class="num">Critical</th></tr></thead>
+  <tbody id="temps"></tbody>
+</table>
+<div id="sensornote" class="muted hwnote"></div>
+
+<h2>PCI devices <span id="pcicount" class="muted"></span></h2>
+<input id="pcifilter" type="search" placeholder="Filter (for example: ethernet, nvidia)" autocomplete="off">
+<div class="scroll"><table>
+  <thead><tr><th>Slot</th><th>Class</th><th>Vendor</th><th>Device</th></tr></thead>
+  <tbody id="pci"></tbody>
+</table></div>
+<div id="pcinote" class="muted hwnote"></div>
+
+<h2>USB devices <span id="usbcount" class="muted"></span></h2>
+<table>
+  <thead><tr><th>Bus</th><th>ID</th><th>Device</th></tr></thead>
+  <tbody id="usb"></tbody>
+</table>
+<div id="usbnote" class="muted hwnote"></div>
+
+<script src="/page/hardware.js"></script>

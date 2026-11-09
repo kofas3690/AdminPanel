@@ -13,4 +13,8 @@ Cmnd_Alias PANEL_SVC = \
     /usr/bin/systemctl --no-block reboot, \
     /usr/bin/systemctl --no-block poweroff
 
+# Hardware page: lists the memory modules (read only). Not copied to the remote-management user.
+Cmnd_Alias PANEL_HW = /usr/sbin/dmidecode -t memory
+
 adminpanel ALL=(root) NOPASSWD: PANEL_SVC
+adminpanel ALL=(root) NOPASSWD: PANEL_HW

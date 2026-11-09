@@ -285,7 +285,7 @@ step_remote_enable() {
     chown "$REMOTE_USER:$REMOTE_USER" "$home/.ssh/authorized_keys"; chmod 600 "$home/.ssh/authorized_keys"
     # The same sudo rules the panel itself has, for this user (one source of truth).
     tmp=$(mktemp)
-    sed -e 's/PANEL_SVC/REMOTE_SVC/g' -e "s/^adminpanel ALL/$REMOTE_USER ALL/" /etc/sudoers.d/adminpanel > "$tmp"
+    sed -e '/PANEL_HW/d' -e 's/PANEL_SVC/REMOTE_SVC/g' -e "s/^adminpanel ALL/$REMOTE_USER ALL/" /etc/sudoers.d/adminpanel > "$tmp"
     if ! visudo -cf "$tmp" >/dev/null 2>&1; then rm -f "$tmp"; die "the generated sudo rule is invalid. Nothing was installed."; fi
     install -m 0440 -o root -g root "$tmp" "/etc/sudoers.d/$REMOTE_USER"; rm -f "$tmp"
     if command -v /usr/sbin/sshd >/dev/null 2>&1; then
