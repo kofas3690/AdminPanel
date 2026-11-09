@@ -1,0 +1,398 @@
+From: t <kofas3690@gmail.com>
+Date: Mon, 9 Nov 2026 09:08:07 +0000
+Subject: [PATCH] Login history page under Accounts (2.1.0)
+
+---
+ app.py                 |   2 +
+ docs/release-v2.1.0.md |  15 ++++++
+ logins.py              | 117 +++++++++++++++++++++++++++++++++++++++++
+ packaging/VERSION      |   2 +-
+ packaging/build.sh     |   2 +-
+ static/logins.html     |  58 ++++++++++++++++++++
+ static/page/logins.js  |  86 ++++++++++++++++++++++++++++++
+ static/shell.js        |   4 +-
+ static/users.html      |   2 +-
+ 9 files changed, 283 insertions(+), 5 deletions(-)
+ create mode 100644 docs/release-v2.1.0.md
+ create mode 100644 logins.py
+ create mode 100644 static/logins.html
+ create mode 100644 static/page/logins.js
+
+diff --git a/app.py b/app.py
+index d26b9f0..1693391 100644
+--- a/app.py
++++ b/app.py
+@@ -24,6 +24,7 @@ from power import router as power_router
+ from alerts import router as alerts_router, start_watcher as alerts_start
+ from metrics import router as metrics_router, start as metrics_start
+ from hardware import router as hardware_router
++from logins import router as logins_router
+ 
+ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+ 
+@@ -57,6 +58,7 @@ app.include_router(power_router)
+ app.include_router(alerts_router)
+ app.include_router(metrics_router)
+ app.include_router(hardware_router)
++app.include_router(logins_router)
+ 
+ app.include_router(fleet_router)
+ app.include_router(health_router)
+diff --git a/docs/release-v2.1.0.md b/docs/release-v2.1.0.md
+new file mode 100644
+index 0000000..13f97bb
+--- /dev/null
++++ b/docs/release-v2.1.0.md
+@@ -0,0 +1,15 @@
++**Install**
++
++```bash
++sudo apt update
++sudo apt install ./adminpanel_2.1.0_all.deb
++sudo adminpanel-selfcheck
++```
++
++Your accounts, certificate, port and settings are kept. Full guide: [docs/INSTALL.md](https://github.com/kofas3690/AdminPanel/blob/main/docs/INSTALL.md).
++
++### Added
++- **Login history** (under *Accounts*, next to *Users*). A read-only page with two tabs:
++  - *Sign-ins*: who is signed in on a terminal now, and a filterable history of past logins (user, terminal, address, time, duration, and whether a session ended in a crash or shutdown).
++  - *Failed attempts*: failed SSH password and key attempts over the last 24 hours, 7 days or 30 days, grouped by source address with the user names tried, plus the latest individual attempts.
++- No new permissions: it reads the system login record and the journal that the panel already reads. Nothing is changed by this page.
+diff --git a/logins.py b/logins.py
+new file mode 100644
+index 0000000..ff9d956
+--- /dev/null
++++ b/logins.py
+@@ -0,0 +1,117 @@
++"""Login history: who signed in to this machine, and who tried and failed.
++
++Both lists are read only. Successful logins come from the system's own login record (`last`, which reads
++/var/log/wtmp); failed SSH attempts come from the journal. Failed attempts are grouped by source address,
++so a password-guessing run shows up as one line with a count instead of hundreds of lines.
++"""
++import json, re, subprocess, time
++from datetime import datetime
++import psutil
++from fastapi import APIRouter, Depends, HTTPException
++from auth import current_user
++import journal
++
++LAST = "/usr/bin/last"
++router = APIRouter(prefix="/api/logins")
++
++ISO = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d"
++ISO_RE = re.compile(ISO)
++RANGES = {"24h": "--since=-24h", "7d": "--since=-7d", "30d": "--since=-30d"}
++FAILED = [
++    re.compile(r"Failed (?:password|publickey|keyboard-interactive/pam) for (?:invalid user )?(\S+) from (\S+) port"),
++    re.compile(r"Invalid user (\S*) from (\S+)"),
++]
++
++
++def to_epoch(s):
++    try:
++        return int(datetime.fromisoformat(s).timestamp())
++    except ValueError:
++        return None
++
++
++def parse_last(text):
++    rows = []
++    for line in text.splitlines():
++        m = ISO_RE.search(line)
++        if not m or line.startswith(("wtmp begins", "btmp begins")):
++            continue
++        head = line[:m.start()].split()
++        if len(head) < 2:
++            continue
++        rest = line[m.end():].strip()
++        end, state = None, ""
++        m2 = ISO_RE.match(rest.lstrip("- ").strip())
++        if rest.startswith("still logged in"):
++            state = "active"
++        elif m2:
++            end = to_epoch(m2.group(0))
++        elif rest.startswith("gone"):
++            state = "gone"
++        elif re.match(r"-\s*(crash|down)", rest):
++            state = re.match(r"-\s*(crash|down)", rest).group(1)
++        rows.append({"user": head[0], "tty": head[1], "host": " ".join(head[2:]), "start": to_epoch(m.group(0)),
++                     "end": end, "state": state or ("ended" if end else "")})
++    return rows
++
++
++@router.get("/sessions")
++def sessions(limit: int = 200, user: str = Depends(current_user)):
++    limit = max(10, min(limit, 1000))
++    try:
++        r = subprocess.run([LAST, "-w", "-F", "--time-format", "iso", "-n", str(limit)], capture_output=True,
++                           encoding="utf-8", errors="replace", timeout=15, env=journal.ENV, stdin=subprocess.DEVNULL)
++    except FileNotFoundError:
++        raise HTTPException(500, "The 'last' command is not installed (sudo apt install util-linux)")
++    except subprocess.TimeoutExpired:
++        raise HTTPException(504, "Reading the login record took too long")
++    if r.returncode != 0 and not r.stdout:
++        raise HTTPException(500, "Could not read the login record: " + (r.stderr or "").strip()[:150])
++    history = [x for x in parse_last(r.stdout) if x["tty"] != "system"]
++    now = []
++    for u in psutil.users():
++        now.append({"user": u.name, "tty": u.terminal or "", "host": u.host or "", "start": int(u.started)})
++    return {"now": now, "history": history}
++
++
++@router.get("/failed")
++def failed(rng: str = "24h", user: str = Depends(current_user)):
++    if rng not in RANGES:
++        raise HTTPException(400, "Invalid range")
++    try:
++        r = subprocess.run([journal.JOURNALCTL, "--no-pager", "-o", "json", RANGES[rng], "-t", "sshd", "-t", "sshd-session",
++                            "-n", "20000"], capture_output=True, encoding="utf-8", errors="replace", timeout=30,
++                           env=journal.ENV, stdin=subprocess.DEVNULL)
++    except subprocess.TimeoutExpired:
++        raise HTTPException(504, "Reading the journal took too long")
++    if r.returncode != 0:
++        raise HTTPException(400, (r.stderr or "journalctl failed").strip()[:200])
++    seen, attempts = set(), []
++    for line in r.stdout.splitlines():
++        try:
++            e = json.loads(line)
++        except ValueError:
++            continue
++        msg = journal.message(e)
++        for pat in FAILED:
++            m = pat.search(msg)
++            if m:
++                ts = int(int(e.get("__REALTIME_TIMESTAMP", "0")) / 1e6)
++                key = (ts, m.group(1), m.group(2))
++                if key not in seen:                      # "Invalid user" and "Failed password" describe one attempt
++                    seen.add(key)
++                    attempts.append({"t": ts, "user": m.group(1) or "(empty)", "ip": m.group(2)})
++                break
++    attempts.sort(key=lambda a: -a["t"])
++    groups = {}
++    for a in attempts:
++        g = groups.setdefault(a["ip"], {"ip": a["ip"], "count": 0, "last": a["t"], "first": a["t"], "users": {}})
++        g["count"] += 1
++        g["first"] = min(g["first"], a["t"])
++        g["users"][a["user"]] = g["users"].get(a["user"], 0) + 1
++    by_ip = []
++    for g in sorted(groups.values(), key=lambda g: -g["count"])[:100]:
++        users = sorted(g["users"].items(), key=lambda kv: -kv[1])
++        by_ip.append({"ip": g["ip"], "count": g["count"], "first": g["first"], "last": g["last"],
++                      "users": [u for u, _ in users[:5]], "more_users": max(0, len(users) - 5)})
++    return {"total": len(attempts), "sources": len(groups), "by_ip": by_ip, "recent": attempts[:200]}
+diff --git a/packaging/VERSION b/packaging/VERSION
+index 38f77a6..7ec1d6d 100644
+--- a/packaging/VERSION
++++ b/packaging/VERSION
+@@ -1 +1 @@
+-2.0.1
++2.1.0
+diff --git a/packaging/build.sh b/packaging/build.sh
+index a9c17c6..f5be94e 100755
+--- a/packaging/build.sh
++++ b/packaging/build.sh
+@@ -17,7 +17,7 @@ say() { echo "==> $*"; }
+ [[ "$VERSION" =~ ^[0-9][A-Za-z0-9.+~-]*$ ]] || die "invalid version: $VERSION"
+ command -v dpkg-deb >/dev/null || die "dpkg-deb is required. Build this on Ubuntu or Debian."
+ 
+-MODULES=(paths power mailer alerts metrics hardware app auth audit store system services logs updates firewall users terminal storage storage_admin fs network security journal units userunits create_user enroll_2fa sshkeys loginlock fleet actions bridge remote)
++MODULES=(paths power mailer alerts metrics hardware logins app auth audit store system services logs updates firewall users terminal storage storage_admin fs network security journal units userunits create_user enroll_2fa sshkeys loginlock fleet actions bridge remote)
+ HELPERS=(apt ufw users net disk userunits units)
+ 
+ say "Checking the source files"
+diff --git a/static/logins.html b/static/logins.html
+new file mode 100644
+index 0000000..6a9f3cf
+--- /dev/null
++++ b/static/logins.html
+@@ -0,0 +1,58 @@
++<!doctype html>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>Login history</title>
++<link rel="stylesheet" href="/app.css">
++<script src="/theme.js"></script>
++<script src="/shell.js" defer></script>
++<style>
++  .tbl-wrap { overflow-x: auto; }
++  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; background: var(--code-bg); }
++  .pill.live { background: var(--ok); color: #fff; }
++  .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
++</style>
++<p class="subtabs"><a href="/users.html">Users</a><a href="/logins.html" class="on">Login history</a></p>
++<h1>Login history</h1>
++<p class="muted">Who signed in to this machine, and who tried and failed. Read only: this page changes nothing.</p>
++<p id="err" class="crit"></p>
++<p>
++  <button class="tab active" data-tab="ok">Sign-ins</button>
++  <button class="tab" data-tab="bad">Failed attempts</button>
++</p>
++
++<section id="tab-ok">
++  <h2>Signed in now</h2>
++  <div class="tbl-wrap"><table>
++    <thead><tr><th>User</th><th>Terminal</th><th>From</th><th>Since</th></tr></thead>
++    <tbody id="now"></tbody>
++  </table></div>
++  <h2>History</h2>
++  <div class="toolbar">
++    <input id="fuser" placeholder="Filter by user or address" maxlength="64" aria-label="Filter sign-ins">
++    <span id="okcount" class="muted"></span>
++  </div>
++  <div class="tbl-wrap"><table>
++    <thead><tr><th>User</th><th>Terminal</th><th>From</th><th>Signed in</th><th>Duration</th></tr></thead>
++    <tbody id="hist"></tbody>
++  </table></div>
++</section>
++
++<section id="tab-bad" hidden>
++  <div class="toolbar">
++    <label>Period <select id="rng"><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select></label>
++    <span id="badcount" class="muted"></span>
++  </div>
++  <h2>By source address</h2>
++  <div class="tbl-wrap"><table>
++    <thead><tr><th>Address</th><th>Attempts</th><th>User names tried</th><th>Last attempt</th></tr></thead>
++    <tbody id="byip"></tbody>
++  </table></div>
++  <h2>Latest attempts</h2>
++  <div class="tbl-wrap"><table>
++    <thead><tr><th>Time</th><th>User name</th><th>Address</th></tr></thead>
++    <tbody id="recent"></tbody>
++  </table></div>
++  <p class="muted">Counts SSH password and key failures from the system journal. A long list from one address is
++  usually an automatic guessing run; the Firewall page can block it.</p>
++</section>
++<script src="/page/logins.js"></script>
+diff --git a/static/page/logins.js b/static/page/logins.js
+new file mode 100644
+index 0000000..4e2e17c
+--- /dev/null
++++ b/static/page/logins.js
+@@ -0,0 +1,86 @@
++const $ = (id) => document.getElementById(id);
++const S = { history: [] };
++
++async function api(path) {
++  const r = await fetch(path);
++  if (r.status === 401) { location.href = "/login.html"; throw new Error("not logged in"); }
++  if (!r.ok) {
++    let m = "Request failed (" + r.status + ")";
++    try { const j = await r.json(); if (typeof j.detail === "string") m = j.detail; } catch (e) {}
++    throw new Error(m);
++  }
++  return r.json();
++}
++const when = (s) => s ? new Date(s * 1000).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
++function dur(a, b) {
++  const s = Math.max(0, b - a), d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
++  return d ? d + "d " + h + "h" : h ? h + "h " + m + "m" : m + "m";
++}
++function row(tbody, cells) {
++  const tr = document.createElement("tr");
++  for (const c of cells) {
++    const td = document.createElement("td");
++    if (c instanceof Node) td.appendChild(c); else td.textContent = c;
++    tr.appendChild(td);
++  }
++  tbody.appendChild(tr);
++}
++function empty(tbody, cols, text) {
++  const tr = document.createElement("tr"), td = document.createElement("td");
++  td.colSpan = cols; td.className = "muted"; td.textContent = text; tr.appendChild(td); tbody.appendChild(tr);
++}
++function pill(text, live) {
++  const s = document.createElement("span"); s.className = "pill" + (live ? " live" : ""); s.textContent = text; return s;
++}
++
++function showHistory() {
++  const q = $("fuser").value.trim().toLowerCase();
++  const body = $("hist"); body.textContent = "";
++  const rows = S.history.filter((h) => !q || h.user.toLowerCase().includes(q) || h.host.toLowerCase().includes(q));
++  $("okcount").textContent = rows.length + " of " + S.history.length + " shown";
++  if (!rows.length) { empty(body, 5, "No sign-ins match."); return; }
++  for (const h of rows) {
++    let d;
++    if (h.state === "active") d = pill("still signed in", true);
++    else if (h.state === "gone") d = pill("no logout recorded");
++    else if (h.state === "crash" || h.state === "down") d = pill("ended by " + (h.state === "crash" ? "a crash" : "shutdown"));
++    else d = h.end ? dur(h.start, h.end) : "";
++    row(body, [h.user, h.tty, h.host || "local", when(h.start), d]);
++  }
++}
++
++async function loadOk() {
++  const d = await api("/api/logins/sessions");
++  S.history = d.history;
++  const now = $("now"); now.textContent = "";
++  if (!d.now.length) empty(now, 4, "Nobody is signed in on a terminal right now.");
++  for (const n of d.now) row(now, [n.user, n.tty, n.host || "local", when(n.start)]);
++  showHistory();
++}
++
++async function loadBad() {
++  const d = await api("/api/logins/failed?rng=" + encodeURIComponent($("rng").value));
++  $("badcount").textContent = d.total + " failed attempts from " + d.sources + " address" + (d.sources === 1 ? "" : "es");
++  const a = $("byip"); a.textContent = "";
++  if (!d.by_ip.length) empty(a, 4, "No failed attempts in this period.");
++  for (const g of d.by_ip) {
++    row(a, [g.ip, String(g.count), g.users.join(", ") + (g.more_users ? " and " + g.more_users + " more" : ""), when(g.last)]);
++  }
++  const r = $("recent"); r.textContent = "";
++  if (!d.recent.length) empty(r, 3, "Nothing to show.");
++  for (const x of d.recent) row(r, [when(x.t), x.user, x.ip]);
++}
++
++function tab(name) {
++  for (const b of document.querySelectorAll(".tab")) b.classList.toggle("active", b.dataset.tab === name);
++  $("tab-ok").hidden = name !== "ok"; $("tab-bad").hidden = name !== "bad";
++  go(name);
++}
++async function go(name) {
++  $("err").textContent = "";
++  try { await (name === "ok" ? loadOk() : loadBad()); } catch (e) { $("err").textContent = e.message; }
++}
++for (const b of document.querySelectorAll(".tab")) b.onclick = () => { history.replaceState(null, "", "#" + b.dataset.tab); tab(b.dataset.tab); };
++$("fuser").oninput = showHistory;
++$("rng").onchange = () => go("bad");
++tab(location.hash === "#bad" ? "bad" : "ok");
+diff --git a/static/shell.js b/static/shell.js
+index 27bb7ee..3b352c6 100644
+--- a/static/shell.js
++++ b/static/shell.js
+@@ -3,7 +3,7 @@
+   const NAV = [
+     ["System", [["Overview", "/"], ["Servers", "/fleet.html", "remote services ssh bridge reboot shut down panels"], ["Services", "/units.html"], ["Storage", "/storage.html"],
+                 ["Hardware", "/hardware.html", "cpu processor memory ram dimm disks pci usb temperature sensors gpu model"],
+-                ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html"],
++                ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html", "login history sign-in failed attempts ssh brute force users"],
+                 ["Logs", "/logs.html", "journal journalctl errors messages syslog"],
+                 ["Alerts", "/alerts.html", "warnings disk full memory failed services problems notifications"]]],
+     ["Tools", [["Software updates", "/updates.html"], ["File manager", "/files.html"],
+@@ -32,7 +32,7 @@
+     return e;
+   };
+   // VPN and Proxy are tabs under Networking, so that sidebar entry stays highlighted on their pages.
+-  const SUBPAGES = { "/vpn.html": "/network.html", "/proxy.html": "/network.html", "/remote.html": "/fleet.html" };
++  const SUBPAGES = { "/vpn.html": "/network.html", "/proxy.html": "/network.html", "/remote.html": "/fleet.html", "/logins.html": "/users.html" };
+   const isHere = (href) =>
+     location.pathname === href || SUBPAGES[location.pathname] === href || (href === "/" && location.pathname === "/index.html");
+ 
+diff --git a/static/users.html b/static/users.html
+index b5bb149..b6fc034 100644
+--- a/static/users.html
++++ b/static/users.html
+@@ -5,7 +5,7 @@
+ <link rel="stylesheet" href="/app.css">
+ <script src="/theme.js"></script>
+ <script src="/shell.js" defer></script>
+-<p><a href="/">&larr; Back</a></p>
++<p class="subtabs"><a href="/users.html" class="on">Users</a><a href="/logins.html">Login history</a></p>
+ <h1>Users</h1>
+ <p id="info">loading…</p>
+ 
+-- 
+2.43.0
+
