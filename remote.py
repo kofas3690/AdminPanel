@@ -4,7 +4,7 @@ One short SSH connection per call. The other machine's host key must already be 
 known-hosts file (REMOTE_KNOWN_HOSTS), the same way the local Terminal pins this machine's key, so
 the panel cannot be tricked into talking to an impostor and cannot change the file itself.
 """
-import json, os, re, threading
+import json, os, re, socket, threading
 from pathlib import Path
 
 import paramiko
@@ -65,12 +65,26 @@ def call(host_id, op, args=None):
         line = stdout.readline(MAX_ANSWER + 1)
     except paramiko.BadHostKeyException:
         raise RemoteError(502, "The server's host key has changed")
+    except paramiko.AuthenticationException:
+        raise RemoteError(502, "That server refused the panel's key. Run 'sudo adminpanel-setup remote-enable' there again")
     except paramiko.SSHException as e:
         if "not found in known_hosts" in str(e):
             raise RemoteError(502, "The server's host key is not pinned")
-        raise RemoteError(502, "Could not sign in to that server")
-    except OSError:
-        raise RemoteError(502, "Could not reach that server")
+        if "banner" in str(e).lower():
+            raise RemoteError(502, "That server accepted the connection but did not answer in time (busy or starting up?). Try again in a minute")
+        raise RemoteError(502, "The connection to that server broke during sign-in. Try again in a minute")
+    except EOFError:
+        raise RemoteError(502, "The connection to that server was closed during sign-in. Try again in a minute")
+    except (TimeoutError, socket.timeout):
+        raise RemoteError(502, "That server did not answer in time (busy, starting up, or a firewall is dropping the connection)")
+    except ConnectionRefusedError:
+        raise RemoteError(502, "That server refused the connection: the SSH server is not running there, or the port is wrong")
+    except ConnectionResetError:
+        raise RemoteError(502, "The connection to that server was reset during sign-in. Try again in a minute")
+    except OSError as e:
+        if isinstance(e, paramiko.ssh_exception.NoValidConnectionsError):
+            raise RemoteError(502, "That server refused the connection: the SSH server is not running there, or the port is wrong")
+        raise RemoteError(502, "Could not reach that server (network or firewall)")
     finally:
         client.close()
     if not line or len(line) > MAX_ANSWER:
