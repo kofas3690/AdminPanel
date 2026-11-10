@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kernel</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  .scroll { max-height: 460px; overflow: auto; }
+  .pill { display: inline-block; white-space: nowrap; padding: 1px 8px; border-radius: 10px; font-size: 12px; background: var(--code-bg); }
+  .pill.ok { background: var(--ok); color: #fff; }
+  .pill.different { background: var(--warn, #d9a400); color: #000; }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  .small { font-size: 12px; color: var(--muted); }
+  #mfilter { width: 280px; max-width: 100%; margin: 4px 0 8px; }
+</style>
+<p class="subtabs"><a href="/hardware.html">Hardware</a><a href="/kernel.html" class="on">Kernel</a></p>
+<h1>Kernel</h1>
+<p class="muted">The running kernel, the modules loaded into it, and a few settings that matter for security. Read only: nothing here changes the machine.</p>
+<p id="err" class="crit"></p>
+<table class="kv"><tbody id="summary"></tbody></table>
+
+<h2>Security settings</h2>
+<p class="muted">Compared with what is commonly recommended for a server. "Different" is a prompt to check, not proof of a problem; the right value can depend on what the machine does.</p>
+<div class="tbl-wrap"><table>
+  <thead><tr><th>Setting</th><th>What it does</th><th>Value</th><th></th></tr></thead>
+  <tbody id="settings"></tbody>
+</table></div>
+
+<h2>Loaded modules</h2>
+<input id="mfilter" placeholder="Filter modules" maxlength="40" aria-label="Filter modules" autocomplete="off">
+<span id="mcount" class="muted"></span>
+<div class="scroll tbl-wrap"><table>
+  <thead><tr><th>Module</th><th class="num">Size</th><th class="num">Used by</th><th>Used by (names)</th></tr></thead>
+  <tbody id="mods"></tbody>
+</table></div>
+<script src="/page/kernel.js"></script>
