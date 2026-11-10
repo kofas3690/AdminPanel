@@ -16,6 +16,7 @@ import units
 import mailer
 import smart
 import certs
+import reboot
 
 router = APIRouter(prefix="/api/alerts")
 store = PersistentDict("alert_settings")
@@ -116,9 +117,21 @@ def cert_alerts(cfg):
     return out
 
 
+def reboot_alerts(cfg):
+    """A reboot that has been waiting for more than a week (the pending update is not fully in effect until then)."""
+    d = reboot.info()
+    if not d["required"] or d["days"] is None or d["days"] < reboot.OVERDUE_DAYS:
+        return []
+    pk = (" Because of: " + ", ".join(d["packages"][:5]) + ".") if d["packages"] else ""
+    return [{"id": "reboot-required", "severity": "warning", "kind": "reboot",
+             "title": f"A reboot has been waiting for {d['days']} days",
+             "detail": "Updates are installed but not fully in effect until the machine restarts." + pk,
+             "link": "/updates.html"}]
+
+
 def scan():
     cfg = settings()
-    found = disk_alerts(cfg) + memory_alerts(cfg) + failed_alerts(cfg) + smart_alerts(cfg) + cert_alerts(cfg)
+    found = disk_alerts(cfg) + memory_alerts(cfg) + failed_alerts(cfg) + smart_alerts(cfg) + cert_alerts(cfg) + reboot_alerts(cfg)
     active = [a for a in found if not a.get("muted")]
     active.sort(key=lambda a: (ORDER[a["severity"]], a["title"]))
     return cfg, active, [a for a in found if a.get("muted")]

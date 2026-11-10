@@ -31,6 +31,7 @@ from smart import router as smart_router, start as smart_start
 from cron import router as cron_router
 from clock import router as clock_router
 from certs import router as certs_router, start as certs_start
+from reboot import router as reboot_router
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -71,6 +72,7 @@ app.include_router(smart_router)
 app.include_router(cron_router)
 app.include_router(clock_router)
 app.include_router(certs_router)
+app.include_router(reboot_router)
 
 app.include_router(fleet_router)
 app.include_router(health_router)
