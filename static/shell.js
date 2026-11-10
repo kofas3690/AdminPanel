@@ -3,7 +3,7 @@
   const NAV = [
     ["System", [["Overview", "/"], ["Servers", "/fleet.html", "remote services ssh bridge reboot shut down panels"], ["Services", "/units.html", "systemd units cron crontab scheduled jobs anacron"], ["Processes", "/processes.html", "top task manager cpu memory kill end process htop"], ["Storage", "/storage.html"], ["Backups", "/backups.html", "backup restore copy archive tar schedule"],
                 ["Hardware", "/hardware.html", "cpu processor memory ram dimm disks pci usb temperature sensors gpu model"],
-                ["Date & time", "/clock.html", "clock timezone time zone ntp hostname name date chrony"], ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html", "login history sign-in failed attempts ssh brute force users groups members"],
+                ["Date & time", "/clock.html", "clock timezone time zone ntp hostname name date chrony"], ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html"], ["Certificates", "/certs.html", "tls ssl https expiry expire lets encrypt letsencrypt nginx renew"], ["Accounts", "/users.html", "login history sign-in failed attempts ssh brute force users groups members"],
                 ["Logs", "/logs.html", "journal journalctl errors messages syslog"],
                 ["Alerts", "/alerts.html", "warnings disk full memory failed services problems notifications"]]],
     ["Tools", [["Software updates", "/updates.html"], ["File manager", "/files.html"],

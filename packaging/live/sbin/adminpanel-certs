@@ -1,0 +1,133 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Certificates page: read the public certificates this machine serves and report when they expire.
+
+Read only. It finds the certificate files itself (the panel's own, Let's Encrypt, and the ones nginx points to), takes
+no path from the caller, never reads a private key (only the first CERTIFICATE block of a file is ever used), and only
+follows paths that end up inside the usual certificate folders."""
+import datetime, json, os, re, subprocess, sys
+
+OPENSSL = "/usr/bin/openssl"
+PANEL_CERT = "/etc/ssl/certs/adminpanel.crt"
+LE_LIVE = "/etc/letsencrypt/live"
+NGINX = "/etc/nginx"
+ALLOWED = ("/etc/letsencrypt/", "/etc/ssl/", "/etc/nginx/", "/etc/pki/")
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+PEM = re.compile(rb"-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+?-----END CERTIFICATE-----")
+SSL_DIRECTIVE = re.compile(r"^\s*ssl_certificate\s+([^;\s]+)\s*;", re.M)
+NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
+MAX_BYTES = 262144
+MAX_CERTS = 40
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def candidates():
+    out = []
+    if os.path.exists(PANEL_CERT):
+        out.append((PANEL_CERT, "panel"))
+    try:
+        for n in sorted(os.listdir(LE_LIVE)):
+            if NAME_RE.fullmatch(n) and not n.startswith("."):
+                out.append((os.path.join(LE_LIVE, n, "fullchain.pem"), "letsencrypt"))
+    except OSError:
+        pass
+    seen = 0
+    for root, dirs, files in os.walk(NGINX):
+        dirs.sort()
+        for f in sorted(files):
+            seen += 1
+            if seen > 300:
+                break
+            p = os.path.join(root, f)
+            try:
+                with open(p, "r", errors="replace") as fh:
+                    text = fh.read(MAX_BYTES)
+            except OSError:
+                continue
+            for m in SSL_DIRECTIVE.findall(text):
+                if m.startswith("/") and "$" not in m:
+                    out.append((m, "nginx"))
+    return out
+
+
+def read_cert(path):
+    real = os.path.realpath(path)
+    if not any(real.startswith(a) for a in ALLOWED) or not os.path.isfile(real):
+        return None
+    try:
+        with open(real, "rb") as f:
+            data = f.read(MAX_BYTES)
+    except OSError:
+        return None
+    m = PEM.search(data)
+    return (real, m.group(0)) if m else None
+
+
+def parse_date(s):
+    try:
+        return int(datetime.datetime.strptime(" ".join(s.split()), "%b %d %H:%M:%S %Y GMT").replace(tzinfo=datetime.timezone.utc).timestamp())
+    except ValueError:
+        return None
+
+
+def describe(pem):
+    try:
+        r = subprocess.run([OPENSSL, "x509", "-noout", "-subject", "-issuer", "-startdate", "-enddate", "-fingerprint", "-sha256",
+                            "-ext", "subjectAltName", "-nameopt", "RFC2253"], input=pem, capture_output=True, timeout=15, env=ENV)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    d = {"names": []}
+    lines = r.stdout.decode("utf-8", "replace").splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("subject="):
+            d["subject"] = line[8:].strip()[:200]
+        elif line.startswith("issuer="):
+            d["issuer"] = line[7:].strip()[:200]
+        elif line.startswith("notBefore="):
+            d["start"] = parse_date(line[10:])
+        elif line.startswith("notAfter="):
+            d["end"] = parse_date(line[9:])
+        elif "Fingerprint=" in line:
+            d["fp"] = line.split("=", 1)[1].strip().replace(":", "").lower()[:64]
+        elif "Subject Alternative Name" in line and i + 1 < len(lines):
+            d["names"] = [x.strip()[4:] for x in lines[i + 1].split(",") if x.strip().startswith("DNS:")][:20]
+            d["names"] += [x.strip()[11:] for x in lines[i + 1].split(",") if x.strip().startswith("IP Address:")][:10]
+    if d.get("end") is None or "fp" not in d:
+        return None
+    d["self_signed"] = d.get("subject") == d.get("issuer")
+    return d
+
+
+def cmd_report():
+    out, seen = [], set()
+    for path, kind in candidates():
+        got = read_cert(path)
+        if not got:
+            continue
+        real, pem = got
+        info = describe(pem)
+        if not info or info["fp"] in seen:
+            continue
+        seen.add(info["fp"])
+        info.update({"path": path, "kind": kind})
+        out.append(info)
+        if len(out) >= MAX_CERTS:
+            break
+    print(json.dumps({"certs": out}))
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["report"]:
+        return cmd_report()
+    if a == ["check"]:
+        return print(json.dumps({"ok": True, "openssl": os.path.exists(OPENSSL)}))
+    die("usage: report | check")
+
+
+main()

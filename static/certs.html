@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Certificates</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; background: var(--code-bg); }
+  .pill.ok { background: var(--ok); color: #fff; }
+  .pill.warning { background: var(--warn, #d9a400); color: #000; }
+  .pill.critical, .pill.expired { background: var(--crit); color: #fff; }
+  .small { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+</style>
+<h1>Certificates</h1>
+<p class="muted">The TLS certificates this machine serves: the panel's own, Let's Encrypt, and the ones nginx points to.
+Read only: no private key is ever read, and nothing here renews or changes a certificate. An expiring certificate also
+appears on the Alerts page.</p>
+<p id="err" class="crit"></p>
+<div class="toolbar"><button id="again">Check again</button><span id="when" class="muted"></span></div>
+<div class="tbl-wrap"><table>
+  <thead><tr><th>Status</th><th>Names</th><th>Issued by</th><th>Expires</th><th>File</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table></div>
+<p class="muted">A certificate the panel made for itself is marked <i>self-signed</i>: browsers warn about it until you
+trust it, which is expected. Let's Encrypt certificates are normally renewed automatically about 30 days before they end.</p>
+<script src="/page/certs.js"></script>

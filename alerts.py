@@ -15,6 +15,7 @@ from store import PersistentDict
 import units
 import mailer
 import smart
+import certs
 
 router = APIRouter(prefix="/api/alerts")
 store = PersistentDict("alert_settings")
@@ -93,9 +94,31 @@ def smart_alerts(cfg):
     return out
 
 
+def cert_alerts(cfg):
+    """Certificates that have expired or will soon (from the hourly reading)."""
+    d = certs.cached() or {}
+    now = int(time.time())
+    out = []
+    for c in certs.annotate(d, now):
+        if c["status"] == "ok":
+            continue
+        name = (c.get("names") or [c.get("subject", "certificate")])[0]
+        if name.startswith("CN="):
+            name = name[3:].split(",")[0]
+        if c["status"] == "expired":
+            title, detail = f"Certificate for {name} has expired", "Visitors and other machines will see certificate errors."
+        else:
+            n = c["days_left"]
+            title = f"Certificate for {name} expires " + ("today" if n < 1 else f"in {n} day" + ("" if n == 1 else "s"))
+            detail = "Renew it before then."
+        out.append({"id": "cert:" + c["fp"][:16], "severity": "warning" if c["status"] == "warning" else "critical",
+                    "kind": "certificate", "title": title, "detail": detail + " File: " + c["path"], "link": "/certs.html"})
+    return out
+
+
 def scan():
     cfg = settings()
-    found = disk_alerts(cfg) + memory_alerts(cfg) + failed_alerts(cfg) + smart_alerts(cfg)
+    found = disk_alerts(cfg) + memory_alerts(cfg) + failed_alerts(cfg) + smart_alerts(cfg) + cert_alerts(cfg)
     active = [a for a in found if not a.get("muted")]
     active.sort(key=lambda a: (ORDER[a["severity"]], a["title"]))
     return cfg, active, [a for a in found if a.get("muted")]
