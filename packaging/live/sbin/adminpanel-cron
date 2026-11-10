@@ -1,0 +1,58 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Cron jobs page: read the personal crontabs of the local accounts.
+
+Read only. It takes no names from the caller: it lists the crontab directory itself, accepts only plain
+file names, refuses symlinks and anything that is not an ordinary file, and caps how much it reads."""
+import json, os, re, stat, sys
+
+DIRS = ("/var/spool/cron/crontabs", "/var/spool/cron")
+NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,32}")
+MAX_BYTES = 65536
+MAX_LINES = 500
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def read_one(d, name):
+    try:
+        fd = os.open(os.path.join(d, name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        data = os.read(fd, MAX_BYTES)
+    finally:
+        os.close(fd)
+    lines = data.decode("utf-8", "replace").splitlines()
+    return lines[:MAX_LINES]
+
+
+def cmd_list():
+    out = []
+    for d in DIRS:
+        if not os.path.isdir(d):
+            continue
+        for n in sorted(os.listdir(d)):
+            if not NAME_RE.fullmatch(n) or n.startswith("."):
+                continue
+            lines = read_one(d, n)
+            if lines is not None:
+                out.append({"user": n, "lines": lines})
+        break
+    print(json.dumps({"crontabs": out}))
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["list"]:
+        return cmd_list()
+    if a == ["check"]:
+        return print(json.dumps({"ok": True}))
+    die("usage: list | check")
+
+
+main()

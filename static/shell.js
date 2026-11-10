@@ -1,7 +1,7 @@
 (function () {
   "use strict";
   const NAV = [
-    ["System", [["Overview", "/"], ["Servers", "/fleet.html", "remote services ssh bridge reboot shut down panels"], ["Services", "/units.html"], ["Processes", "/processes.html", "top task manager cpu memory kill end process htop"], ["Storage", "/storage.html"], ["Backups", "/backups.html", "backup restore copy archive tar schedule"],
+    ["System", [["Overview", "/"], ["Servers", "/fleet.html", "remote services ssh bridge reboot shut down panels"], ["Services", "/units.html", "systemd units cron crontab scheduled jobs anacron"], ["Processes", "/processes.html", "top task manager cpu memory kill end process htop"], ["Storage", "/storage.html"], ["Backups", "/backups.html", "backup restore copy archive tar schedule"],
                 ["Hardware", "/hardware.html", "cpu processor memory ram dimm disks pci usb temperature sensors gpu model"],
                 ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html"], ["Accounts", "/users.html", "login history sign-in failed attempts ssh brute force users groups members"],
                 ["Logs", "/logs.html", "journal journalctl errors messages syslog"],
@@ -32,7 +32,7 @@
     return e;
   };
   // VPN and Proxy are tabs under Networking, so that sidebar entry stays highlighted on their pages.
-  const SUBPAGES = { "/vpn.html": "/network.html", "/proxy.html": "/network.html", "/remote.html": "/fleet.html", "/logins.html": "/users.html", "/groups.html": "/users.html" };
+  const SUBPAGES = { "/vpn.html": "/network.html", "/proxy.html": "/network.html", "/remote.html": "/fleet.html", "/logins.html": "/users.html", "/groups.html": "/users.html", "/cron.html": "/units.html" };
   const isHere = (href) =>
     location.pathname === href || SUBPAGES[location.pathname] === href || (href === "/" && location.pathname === "/index.html");
 
