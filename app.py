@@ -29,6 +29,7 @@ from backup import router as backup_router
 from processes import router as processes_router
 from smart import router as smart_router, start as smart_start
 from cron import router as cron_router
+from clock import router as clock_router
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -67,6 +68,7 @@ app.include_router(backup_router)
 app.include_router(processes_router)
 app.include_router(smart_router)
 app.include_router(cron_router)
+app.include_router(clock_router)
 
 app.include_router(fleet_router)
 app.include_router(health_router)

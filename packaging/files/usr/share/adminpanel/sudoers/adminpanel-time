@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-time timezone *, /usr/local/sbin/adminpanel-time ntp on, /usr/local/sbin/adminpanel-time ntp off, /usr/local/sbin/adminpanel-time hostname *, /usr/local/sbin/adminpanel-time check

@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Date &amp; time</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 18px 16px; margin: 14px 0; max-width: 720px; }
+  .card h2 { margin-top: 6px; }
+  .clockbig { font-size: 30px; font-variant-numeric: tabular-nums; margin: 4px 0; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+  .row select { min-width: 280px; }
+  .ok { color: var(--ok); }
+  .bad { color: var(--crit); }
+</style>
+<h1>Date &amp; time</h1>
+<p class="muted">The clock, time zone, network time and name of this machine. The time itself is kept right by network
+time; there is no box to type a time into, because a hand-set clock drifts and breaks certificates and logins.</p>
+<p id="err" class="crit"></p>
+<p id="msg" class="ok"></p>
+
+<div class="card">
+  <h2>Clock</h2>
+  <div class="clockbig" id="clock">…</div>
+  <div class="muted" id="zonenow"></div>
+</div>
+
+<div class="card">
+  <h2>Network time</h2>
+  <p id="ntpstate"></p>
+  <div class="row"><button id="ntpbtn">…</button></div>
+  <p class="muted">Network time (NTP) sets the clock from time servers over the internet. It needs a time service such as
+  systemd-timesyncd or chrony on this machine.</p>
+</div>
+
+<div class="card">
+  <h2>Time zone</h2>
+  <div class="row">
+    <input id="zfilter" placeholder="Filter, e.g. Accra or Europe" maxlength="40" aria-label="Filter time zones" autocomplete="off">
+  </div>
+  <div class="row">
+    <select id="zone" aria-label="Time zone"></select>
+    <button id="zsave">Change time zone</button>
+  </div>
+  <p class="muted">Logs and schedules use this zone. Running programs may need a restart to notice a change.</p>
+</div>
+
+<div class="card">
+  <h2>Hostname</h2>
+  <div class="row">
+    <input id="host" maxlength="253" aria-label="Hostname" autocomplete="off" spellcheck="false">
+    <button id="hsave">Change hostname</button>
+  </div>
+  <p class="muted">Lower-case letters, digits and hyphens. The name shown in your prompt and on the network changes at
+  once. Other machines that reach this one by name, and the browser address if you use the name, need the new name too.</p>
+</div>
+<script src="/page/clock.js"></script>
