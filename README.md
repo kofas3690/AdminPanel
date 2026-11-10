@@ -108,6 +108,7 @@ Recommendations: keep port 8443 closed to the public internet where possible (us
 | ![Hardware (2.0)](screenshots/hardware.png) | ![Login history (2.1)](screenshots/logins.png) |
 | ![Failed login attempts (2.1)](screenshots/logins-failed.png) | ![Groups (2.2)](screenshots/groups.png) |
 | ![Backups (2.3)](screenshots/backups.png) | ![Processes (2.4)](screenshots/processes.png) |
+| ![Disk health (2.5)](screenshots/health.png) | |
 
 ---
 
