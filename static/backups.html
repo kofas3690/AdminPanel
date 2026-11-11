@@ -17,7 +17,7 @@
   .ok { color: var(--ok); } .bad { color: var(--crit, #e5534b); }
 </style>
 <h1>Backups</h1>
-<p class="muted">Saves copies of the folders you choose, on a schedule or on demand. Copies are stored on this machine in a folder only the administrator (root) can read.</p>
+<p class="muted">Saves copies of the folders you choose, on a schedule or on demand. Copies are stored in a place only the administrator (root) can read: this machine, or a network share you set up.</p>
 <p id="err" class="crit"></p>
 
 <div class="card">
@@ -36,6 +36,9 @@
 <form id="form">
   <label>Folders to save (one full path per line)
     <textarea id="sources" spellcheck="false" maxlength="8000"></textarea></label>
+  <label>Store copies on
+    <select id="dest"><option value="local">This machine (/var/backups/adminpanel)</option></select></label>
+  <p class="muted">To store copies on another computer, add a Windows (SMB) share for backups on the <a href="/shares.html">Network shares</a> page.</p>
   <div class="row">
     <label>Schedule
       <select id="schedule"><option value="off">Off (manual only)</option><option value="daily">Every day</option><option value="weekly">Every week</option></select></label>
@@ -44,7 +47,7 @@
   </div>
   <button class="primary">Save settings</button> <span id="savemsg" class="muted"></span>
 </form>
-<p class="muted">A copy on the same machine does not protect you from losing the machine or its disk: copy the files from
+<p class="muted">A copy on the same machine does not protect you from losing the machine or its disk: store copies on a network share, or copy the files from
 <code>/var/backups/adminpanel</code> somewhere else too. Not saved: <code>/proc</code>, <code>/sys</code>, <code>/dev</code>, <code>/run</code>
 and other mounted disks inside a folder.</p>
 <script src="/page/backups.js"></script>

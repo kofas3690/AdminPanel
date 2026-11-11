@@ -1,0 +1,57 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network shares</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin: 12px 0; }
+  #form label { display: block; margin: 10px 0; }
+  #form .row { display: flex; gap: 16px; flex-wrap: wrap; }
+  #form input[type=text], #form input[type=password], #form select { max-width: 100%; }
+  code { background: var(--code-bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; word-break: break-all; }
+  .ok { color: var(--ok); } .bad { color: var(--crit, #e5534b); }
+  td.act button { margin: 2px 4px 2px 0; }
+</style>
+<p class="subtabs"><a href="/storage.html">Storage</a><a href="/usage.html">Disk usage</a><a href="/shares.html" class="on">Network shares</a></p>
+<h1>Network shares</h1>
+<p class="muted">Connect Windows (SMB) file shares, such as a NAS or another computer's shared folder. A share is either for
+<b>backups</b> (only the administrator can see inside it, and the Backups page can store copies on it) or for the <b>File manager</b>
+(everyone with an account on this machine can read it, nobody can change it from here).</p>
+<p id="err" class="crit"></p>
+<p id="nocifs" class="crit" hidden>SMB support is not installed on this machine. Install the package <code>cifs-utils</code> on the
+<a href="/packages.html">Packages</a> page, then come back.</p>
+
+<div class="tbl-wrap"><table>
+  <thead><tr><th>Name</th><th>Server and share</th><th>Used for</th><th>State</th><th></th></tr></thead>
+  <tbody id="rows"></tbody>
+</table></div>
+<p class="muted" id="hint"></p>
+
+<h2>Add a share</h2>
+<form id="form" class="card" autocomplete="off">
+  <div class="row">
+    <label>Name <input id="name" type="text" size="16" maxlength="31" placeholder="nas-backup" pattern="[a-z][a-z0-9\-]{1,30}" title="2 to 31 lower-case letters, digits or -, starting with a letter" required></label>
+    <label>Server <input id="server" type="text" size="22" maxlength="253" placeholder="nas.local or 192.168.1.20" required></label>
+    <label>Share <input id="share" type="text" size="18" maxlength="80" placeholder="backups" required></label>
+  </div>
+  <div class="row">
+    <label>User name <input id="user" type="text" size="16" maxlength="64"></label>
+    <label>Password <input id="password" type="password" size="16" maxlength="128" autocomplete="new-password"></label>
+    <label>Domain (optional) <input id="domain" type="text" size="14" maxlength="64"></label>
+  </div>
+  <p class="muted">Leave the user name empty only for a share that allows guests.</p>
+  <div class="row">
+    <label>Use it for
+      <select id="access"><option value="backup">Backups (only root can see inside)</option><option value="browse">File manager (everyone can read)</option></select></label>
+    <label>SMB version
+      <select id="vers"><option value="3.1.1">3.1.1 (newest, most secure)</option><option value="3.0">3.0</option><option value="2.1">2.1 (older servers)</option></select></label>
+  </div>
+  <button class="primary">Add share</button> <span id="addmsg" class="muted"></span>
+</form>
+<p class="muted">The password is stored in a file only root can read and is never shown again. Shares are not connected at start-up: use
+<b>Connect</b>, or let a backup connect its share when it runs. They appear under <code>/mnt/adminpanel/NAME</code>.
+Use <b>Test</b> to check the address and password without leaving the share connected.</p>
+<script src="/page/shares.js"></script>

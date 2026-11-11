@@ -33,7 +33,9 @@ function drawState(d) {
   else if (!d.last) kv(tb, "Last backup", "No backup has run yet");
   else if (d.last.ok) kv(tb, "Last backup", when(d.last.t) + ", " + fmtBytes(d.last.size) + (d.last.warning ? " (a file changed while it was read)" : ""), "ok");
   else kv(tb, "Last backup", "Failed on " + when(d.last.t) + ": " + (d.last.error || "unknown error"), "bad");
-  kv(tb, "Free space", fmtBytes(d.free) + " of " + fmtBytes(d.total) + " on the backup disk");
+  if (c.dest !== "local" && !d.dest_ready) kv(tb, "Stored on", "Network share \"" + c.dest + "\": not connected right now. It is connected automatically when a backup starts.", "bad");
+  else kv(tb, "Stored on", c.dest === "local" ? "This machine" : "Network share \"" + c.dest + "\"");
+  if (d.dest_ready) kv(tb, "Free space", fmtBytes(d.free) + " of " + fmtBytes(d.total) + " on the backup " + (c.dest === "local" ? "disk" : "share"));
   $("now").disabled = d.running;
   $("nowmsg").textContent = d.running ? "A backup is running." : "";
 }
@@ -62,8 +64,19 @@ function drawCopies(d) {
   }
   const r = $("restore"); r.replaceChildren();
   r.append("To restore, sign in on the console and run, for example: ");
-  r.append(el("code", "sudo tar -xzf /var/backups/adminpanel/" + (list[0] ? list[0].name : "FILE") + " -C /tmp/restore"));
+  r.append(el("code", "sudo tar -xzf " + (d.dest_path || "/var/backups/adminpanel") + "/" + (list[0] ? list[0].name : "FILE") + " -C /tmp/restore"));
   r.append(" (create the folder first), then copy back what you need. Copies are readable only by root, so this page cannot restore for you.");
+}
+
+async function fillDest(current) {
+  const sel = $("dest");
+  while (sel.options.length > 1) sel.remove(1);
+  try {
+    const r = await api("/api/shares");
+    if (r.ok) for (const s of (await r.json()).shares) if (s.access === "backup") sel.append(new Option("Network share: " + s.name + " (" + s.server + ")", s.name));
+  } catch (e) {}
+  if (current !== "local" && ![...sel.options].some((o) => o.value === current)) sel.append(new Option("Network share: " + current + " (missing)", current));
+  sel.value = current;
 }
 
 async function load(fillForm) {
@@ -73,6 +86,7 @@ async function load(fillForm) {
   drawState(d); drawCopies(d);
   if (fillForm) {
     $("sources").value = d.config.sources.join("\n");
+    await fillDest(d.config.dest);
     $("schedule").value = d.config.schedule; $("hour").value = String(d.config.hour); $("keep").value = d.config.keep;
   }
   clearTimeout(poll);
@@ -88,7 +102,7 @@ $("now").onclick = async () => {
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault(); $("err").textContent = ""; $("savemsg").textContent = "";
   const sources = $("sources").value.split("\n").map((s) => s.trim()).filter(Boolean);
-  const r = await send("PUT", "/api/backup/settings", { schedule: $("schedule").value, hour: Number($("hour").value), keep: Number($("keep").value), sources });
+  const r = await send("PUT", "/api/backup/settings", { schedule: $("schedule").value, hour: Number($("hour").value), keep: Number($("keep").value), sources, dest: $("dest").value });
   if (!r.ok) { $("err").textContent = await errText(r); return; }
   $("savemsg").textContent = "Saved.";
   load(false);

@@ -1,7 +1,7 @@
 (function () {
   "use strict";
   const NAV = [
-    ["System", [["Overview", "/"], ["Servers", "/fleet.html", "remote services ssh bridge reboot shut down panels"], ["Services", "/units.html", "systemd units cron crontab scheduled jobs anacron"], ["Processes", "/processes.html", "top task manager cpu memory kill end process htop"], ["Storage", "/storage.html", "disk space usage du large files what is using space"], ["Backups", "/backups.html", "backup restore copy archive tar schedule"],
+    ["System", [["Overview", "/"], ["Servers", "/fleet.html", "remote services ssh bridge reboot shut down panels"], ["Services", "/units.html", "systemd units cron crontab scheduled jobs anacron"], ["Processes", "/processes.html", "top task manager cpu memory kill end process htop"], ["Storage", "/storage.html", "disk space usage du large files what is using space network share smb cifs nas windows mount"], ["Backups", "/backups.html", "backup restore copy archive tar schedule nas smb network share"],
                 ["Hardware", "/hardware.html", "cpu processor memory ram dimm disks pci usb temperature sensors gpu model kernel modules lsmod sysctl taint"],
                 ["Date & time", "/clock.html", "clock timezone time zone ntp hostname name date chrony"], ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html"], ["Certificates", "/certs.html", "tls ssl https expiry expire lets encrypt letsencrypt nginx renew"], ["Accounts", "/users.html", "sudo sudoers privilege login history sign-in failed attempts ssh brute force users groups members"],
                 ["Logs", "/logs.html", "journal journalctl errors messages syslog"],
@@ -32,7 +32,7 @@
     return e;
   };
   // VPN and Proxy are tabs under Networking, so that sidebar entry stays highlighted on their pages.
-  const SUBPAGES = { "/vpn.html": "/network.html", "/proxy.html": "/network.html", "/remote.html": "/fleet.html", "/logins.html": "/users.html", "/groups.html": "/users.html", "/cron.html": "/units.html", "/kernel.html": "/hardware.html", "/sudo.html": "/users.html", "/packages.html": "/updates.html", "/usage.html": "/storage.html" };
+  const SUBPAGES = { "/vpn.html": "/network.html", "/proxy.html": "/network.html", "/remote.html": "/fleet.html", "/logins.html": "/users.html", "/groups.html": "/users.html", "/cron.html": "/units.html", "/kernel.html": "/hardware.html", "/sudo.html": "/users.html", "/packages.html": "/updates.html", "/usage.html": "/storage.html", "/shares.html": "/storage.html" };
   const isHere = (href) =>
     location.pathname === href || SUBPAGES[location.pathname] === href || (href === "/" && location.pathname === "/index.html");
 

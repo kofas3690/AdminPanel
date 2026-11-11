@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-share list, /usr/local/sbin/adminpanel-share add, /usr/local/sbin/adminpanel-share mount *, /usr/local/sbin/adminpanel-share unmount *, /usr/local/sbin/adminpanel-share test *, /usr/local/sbin/adminpanel-share remove *, /usr/local/sbin/adminpanel-share check

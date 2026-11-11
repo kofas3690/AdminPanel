@@ -1,0 +1,282 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Network shares page: SMB (Windows file) shares mounted under /mnt/adminpanel/NAME.
+
+The list of shares is kept in one root-only file and every password in its own root-only credentials file, so a
+password never appears in a command line or in the panel. Each value is checked again here, as root. A share is
+either for BACKUPS (only root can see inside it) or for the FILE MANAGER (everyone can read it, nobody can write)."""
+import fcntl, ipaddress, json, os, re, shutil, subprocess, sys, threading
+
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+STATE = "/var/lib/adminpanel"
+CONF = STATE + "/shares.json"
+CREDS = STATE + "/share-creds"
+LOCK = STATE + "/shares.lock"
+BACKUPCONF = STATE + "/backup.json"
+MOUNTS = "/mnt/adminpanel"
+MOUNT = "/usr/bin/mount"
+UMOUNT = "/usr/bin/umount"
+MOUNTCIFS = "/usr/sbin/mount.cifs"
+MOUNTINFO = "/proc/self/mountinfo"
+NAME_RE = re.compile(r"[a-z][a-z0-9-]{1,30}")
+HOST_RE = re.compile(r"(?=.{1,253}\Z)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*")
+SHARE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._$ -]{0,79}")
+USER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,63}")
+VERS = ("3.1.1", "3.0", "2.1")
+ACCESS = ("backup", "browse")
+MAX_SHARES = 20
+FSTYPES = ("cifs", "smb3")
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def load():
+    try:
+        with open(CONF) as f:
+            d = json.load(f)
+        return d if isinstance(d, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def save(items):
+    os.makedirs(STATE, mode=0o755, exist_ok=True)
+    tmp = CONF + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(items, f)
+    os.replace(tmp, CONF)
+
+
+class locked:
+    def __enter__(self):
+        os.makedirs(STATE, mode=0o755, exist_ok=True)
+        self.fd = os.open(LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+
+    def __exit__(self, *a):
+        os.close(self.fd)
+
+
+def unesc(s):
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), s)
+
+
+def mounted(mp):
+    try:
+        with open(MOUNTINFO) as f:
+            for line in f:
+                left, _, right = line.partition(" - ")
+                parts = left.split(" ")
+                if len(parts) > 4 and unesc(parts[4]) == mp and right.split(" ")[0] in FSTYPES:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def find(name, items=None):
+    if not NAME_RE.fullmatch(name or ""):
+        die("invalid share name")
+    for s in items if items is not None else load():
+        if s["name"] == name:
+            return s
+    die("no such share")
+
+
+def mp_of(name):
+    return MOUNTS + "/" + name
+
+
+def space(mp):
+    out = {}
+
+    def work():
+        try:
+            u = shutil.disk_usage(mp)
+            out["total"], out["free"] = u.total, u.free
+        except OSError:
+            pass
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    t.join(5)
+    return out.get("total", 0), out.get("free", 0)
+
+
+def public(s):
+    mp = mp_of(s["name"])
+    m = mounted(mp)
+    total, free = space(mp) if m else (0, 0)
+    return {"name": s["name"], "server": s["server"], "share": s["share"], "user": s["user"], "domain": s["domain"],
+            "vers": s["vers"], "access": s["access"], "mounted": m, "path": mp, "total": total, "free": free}
+
+
+def cmd_list():
+    print(json.dumps({"cifs": os.path.exists(MOUNTCIFS), "shares": [public(s) for s in load()]}))
+
+
+def text(v, rx, what, required=True):
+    if v in (None, ""):
+        if required:
+            die(what + " is required")
+        return ""
+    if not isinstance(v, str) or not rx.fullmatch(v):
+        die("invalid " + what)
+    return v
+
+
+def check_server(v):
+    if not isinstance(v, str):
+        die("invalid server")
+    try:
+        ipaddress.IPv4Address(v)
+        return v
+    except ValueError:
+        pass
+    if not HOST_RE.fullmatch(v):
+        die("the server must be a name like nas.local or an IPv4 address like 192.168.1.20")
+    return v
+
+
+def cmd_add():
+    try:
+        c = json.loads(sys.stdin.read(65536))
+    except ValueError:
+        die("invalid request")
+    want = {"name", "server", "share", "user", "password", "domain", "vers", "access"}
+    if not isinstance(c, dict) or set(c) != want:
+        die("invalid request")
+    name = text(c["name"], NAME_RE, "name (2 to 31 lower-case letters, digits or -, starting with a letter)")
+    server = check_server(c["server"])
+    share = text(c["share"], SHARE_RE, "share name")
+    user = text(c["user"], USER_RE, "user name", required=False)
+    domain = text(c["domain"], USER_RE, "domain", required=False)
+    pw = c["password"]
+    if user:
+        if not isinstance(pw, str) or not 1 <= len(pw) <= 128 or any(ord(ch) < 32 or ord(ch) == 127 for ch in pw) \
+                or pw != pw.strip():
+            die("the password must be 1 to 128 characters with no line breaks and no spaces at the ends")
+    elif pw not in ("", None):
+        die("a password needs a user name")
+    if c["vers"] not in VERS:
+        die("unsupported SMB version")
+    if c["access"] not in ACCESS:
+        die("access must be backup or browse")
+    with locked():
+        items = load()
+        if len(items) >= MAX_SHARES:
+            die("too many shares")
+        if any(s["name"] == name for s in items):
+            die("a share with this name already exists")
+        os.makedirs(CREDS, mode=0o700, exist_ok=True)
+        os.chmod(CREDS, 0o700)
+        if user:
+            p = CREDS + "/" + name
+            fd = os.open(p + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write("username=%s\npassword=%s\n%s" % (user, pw, ("domain=%s\n" % domain) if domain else ""))
+            os.replace(p + ".tmp", p)
+        items.append({"name": name, "server": server, "share": share, "user": user, "domain": domain, "vers": c["vers"],
+                      "access": c["access"]})
+        save(items)
+    print("added")
+
+
+def run_mount(s):
+    mp = mp_of(s["name"])
+    if mounted(mp):
+        return
+    if not os.path.exists(MOUNTCIFS):
+        die("SMB support is not installed. Install the package cifs-utils (Updates, Packages) and try again.")
+    os.makedirs(MOUNTS, mode=0o755, exist_ok=True)
+    os.chmod(MOUNTS, 0o755)
+    os.makedirs(mp, mode=0o755, exist_ok=True)
+    if os.listdir(mp):
+        die("the folder " + mp + " is not empty; refusing to mount over it")
+    opts = ["vers=" + s["vers"], "uid=0", "gid=0", "nosuid", "nodev", "noexec"]
+    opts.append("credentials=" + CREDS + "/" + s["name"] if s["user"] else "guest")
+    opts += ["ro", "file_mode=0444", "dir_mode=0555"] if s["access"] == "browse" else ["file_mode=0600", "dir_mode=0700"]
+    try:
+        r = subprocess.run([MOUNT, "-t", "cifs", "//%s/%s" % (s["server"], s["share"]), mp, "-o", ",".join(opts)],
+                           capture_output=True, text=True, env=ENV, stdin=subprocess.DEVNULL, timeout=45)
+    except subprocess.TimeoutExpired:
+        die("the server did not answer within 45 seconds")
+    if r.returncode != 0 or not mounted(mp):
+        err = (r.stderr or r.stdout or "mount failed").strip().splitlines()
+        die(("could not connect: " + (err[-1] if err else "mount failed"))[:240], 1)
+
+
+def cmd_mount(name):
+    with locked():
+        run_mount(find(name))
+    print("mounted")
+
+
+def do_unmount(s):
+    mp = mp_of(s["name"])
+    if not mounted(mp):
+        return
+    r = subprocess.run([UMOUNT, mp], capture_output=True, text=True, env=ENV, stdin=subprocess.DEVNULL, timeout=60)
+    if r.returncode != 0:
+        err = (r.stderr or "").strip().splitlines()
+        die(("could not disconnect: " + (err[-1] if err else "busy"))[:240], 1)
+
+
+def cmd_unmount(name):
+    with locked():
+        do_unmount(find(name))
+    print("unmounted")
+
+
+def cmd_test(name):
+    with locked():
+        s = find(name)
+        was = mounted(mp_of(name))
+        run_mount(s)
+        total, free = space(mp_of(name))
+        if not was:
+            do_unmount(s)
+    print(json.dumps({"ok": True, "total": total, "free": free}))
+
+
+def backup_dest():
+    try:
+        with open(BACKUPCONF) as f:
+            return json.load(f).get("dest", "local")
+    except (OSError, ValueError):
+        return "local"
+
+
+def cmd_remove(name):
+    with locked():
+        items = load()
+        s = find(name, items)
+        if backup_dest() == name:
+            die("this share is the backup destination. Choose another destination on the Backups page first.")
+        do_unmount(s)
+        try:
+            os.unlink(CREDS + "/" + name)
+        except OSError:
+            pass
+        save([x for x in items if x["name"] != name])
+        try:
+            os.rmdir(mp_of(name))
+        except OSError:
+            pass
+    print("removed")
+
+
+def main():
+    a = sys.argv[1:]
+    one = {"list": cmd_list, "add": cmd_add, "check": lambda: print(json.dumps({"ok": True}))}
+    two = {"mount": cmd_mount, "unmount": cmd_unmount, "test": cmd_test, "remove": cmd_remove}
+    if len(a) == 1 and a[0] in one:
+        return one[a[0]]()
+    if len(a) == 2 and a[0] in two:
+        return two[a[0]](a[1])
+    die("usage: list | add | mount NAME | unmount NAME | test NAME | remove NAME | check")
+
+
+main()

@@ -7,7 +7,13 @@ settings file written only by this helper after checking every value."""
 import fcntl, json, os, re, shutil, subprocess, sys, time
 
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
-DEST = "/var/backups/adminpanel"
+LOCAL_DEST = "/var/backups/adminpanel"
+DEST = LOCAL_DEST
+SHARES = "/var/lib/adminpanel/shares.json"
+SHARE_HELPER = "/usr/local/sbin/adminpanel-share"
+MOUNTS = "/mnt/adminpanel"
+MOUNTINFO = "/proc/self/mountinfo"
+DEST_RE = re.compile(r"local|[a-z][a-z0-9-]{1,30}")
 STATE = "/var/lib/adminpanel"
 CONF = STATE + "/backup.json"
 LAST = STATE + "/backup-last.json"
@@ -15,10 +21,10 @@ LOCK = STATE + "/backup.lock"
 SYSTEMCTL = "/usr/bin/systemctl"
 TAR = "/usr/bin/tar"
 NAME_RE = re.compile(r"adminpanel-backup-\d{8}-\d{6}\.tar\.gz")
-DENY = ("/proc", "/sys", "/dev", "/run", "/var/backups")
+DENY = ("/proc", "/sys", "/dev", "/run", "/var/backups", "/mnt/adminpanel")
 MIN_FREE = 500 * 1024 * 1024
 INTERVAL = {"daily": 23 * 3600, "weekly": 6 * 86400 + 23 * 3600}
-DEFAULT = {"schedule": "off", "hour": 3, "keep": 7, "sources": ["/etc", "/home"]}
+DEFAULT = {"schedule": "off", "hour": 3, "keep": 7, "sources": ["/etc", "/home"], "dest": "local"}
 
 
 LASTMSG = [""]
@@ -42,6 +48,52 @@ def check_source(p):
         if real == d or real.startswith(d + "/") or p == d or p.startswith(d + "/"):
             die("this location can't be backed up: " + p)
     return p
+
+
+def backup_shares():
+    try:
+        with open(SHARES) as f:
+            return {x["name"]: x for x in json.load(f) if isinstance(x, dict) and x.get("access") == "backup"}
+    except (OSError, ValueError, KeyError):
+        return {}
+
+
+def share_mounted(name):
+    mp = MOUNTS + "/" + name
+    try:
+        with open(MOUNTINFO) as f:
+            for line in f:
+                left, _, right = line.partition(" - ")
+                parts = left.split(" ")
+                if len(parts) > 4 and parts[4] == mp and right.split(" ")[0] in ("cifs", "smb3"):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def dest_dir(c):
+    return LOCAL_DEST if c["dest"] == "local" else MOUNTS + "/" + c["dest"] + "/adminpanel-backups"
+
+
+def use_dest(c, connect=False):
+    """Point DEST at the chosen place. A network share is only used while it really is mounted, so a missing mount
+    can never make the backup fill this machine's own disk. Returns False when the share is not connected."""
+    global DEST
+    DEST = dest_dir(c)
+    if c["dest"] == "local":
+        return True
+    if c["dest"] not in backup_shares():
+        die("the backup destination is not a known backup share")
+    if connect and not share_mounted(c["dest"]):
+        try:
+            r = subprocess.run([SHARE_HELPER, "mount", c["dest"]], capture_output=True, text=True, env=ENV,
+                               stdin=subprocess.DEVNULL, timeout=60)
+            if r.returncode != 0 and r.stderr.strip():
+                LASTMSG[0] = r.stderr.strip().splitlines()[-1][:160]
+        except subprocess.TimeoutExpired:
+            LASTMSG[0] = "the share did not answer in time"
+    return share_mounted(c["dest"])
 
 
 def load():
@@ -70,6 +122,10 @@ def cmd_set():
         die("keep must be 1 to 60")
     if not isinstance(c["sources"], list) or not 1 <= len(c["sources"]) <= 20:
         die("choose 1 to 20 folders")
+    if not isinstance(c["dest"], str) or not DEST_RE.fullmatch(c["dest"]):
+        die("invalid destination")
+    if c["dest"] != "local" and c["dest"] not in backup_shares():
+        die("choose a share that is set up for backups on the Network shares page")
     seen = []
     for p in c["sources"]:
         if check_source(p) not in seen:
@@ -122,13 +178,17 @@ def cmd_status():
     fd, busy = running()
     if fd is not None:
         os.close(fd)
-    try:
-        u = shutil.disk_usage(DEST if os.path.isdir(DEST) else "/var")
-        free, total = u.free, u.total
-    except OSError:
-        free = total = 0
-    print(json.dumps({"config": load(), "archives": archives(), "free": free, "total": total,
-                      "last": last(), "running": busy}))
+    c = load()
+    ready = use_dest(c)
+    free = total = 0
+    if ready:
+        try:
+            u = shutil.disk_usage(DEST if os.path.isdir(DEST) else os.path.dirname(DEST))
+            free, total = u.free, u.total
+        except OSError:
+            pass
+    print(json.dumps({"config": c, "archives": archives() if ready else [], "free": free, "total": total,
+                      "last": last(), "running": busy, "dest_path": DEST, "dest_ready": ready}))
 
 
 def record(ok, **kw):
@@ -147,8 +207,18 @@ def make_backup():
         die("a backup is already running", 3)
     try:
         os.umask(0o077)
+        try:
+            if not use_dest(c, connect=True):
+                die("the backup share \"%s\" is not connected%s. Check it on the Network shares page." %
+                    (c["dest"], (" (" + LASTMSG[0] + ")") if LASTMSG[0] else ""))
+        except SystemExit:
+            record(False, error=LASTMSG[0][:200])
+            raise
         os.makedirs(DEST, mode=0o700, exist_ok=True)
-        os.chmod(DEST, 0o700)
+        try:
+            os.chmod(DEST, 0o700)
+        except OSError:
+            pass                                             # some network shares do not allow it
         try:
             for p in c["sources"]:
                 check_source(p)
@@ -173,7 +243,10 @@ def make_backup():
             die("backup failed: " + err, 1)
         final = os.path.join(DEST, name)
         os.replace(tmp, final)
-        os.chmod(final, 0o600)
+        try:
+            os.chmod(final, 0o600)
+        except OSError:
+            pass
         size = os.stat(final).st_size
         names = [a["name"] for a in archives()]
         for old in names[:-c["keep"]]:
@@ -199,9 +272,10 @@ def cmd_run_scheduled():
     now = time.localtime()
     if now.tm_hour < c["hour"]:
         return
-    a = archives()
-    if a and time.time() - a[-1]["t"] < INTERVAL[c["schedule"]]:
-        return
+    if use_dest(c, connect=True):
+        a = archives()
+        if a and time.time() - a[-1]["t"] < INTERVAL[c["schedule"]]:
+            return
     make_backup()
 
 
@@ -216,6 +290,8 @@ def cmd_start():
 
 
 def known(name):
+    if not use_dest(load()):
+        die("the backup share is not connected")
     if not NAME_RE.fullmatch(name) or not os.path.isfile(os.path.join(DEST, name)):
         die("no such backup")
     return os.path.join(DEST, name)

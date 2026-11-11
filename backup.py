@@ -23,6 +23,7 @@ class Settings(BaseModel):
     hour: int = Field(ge=0, le=23)
     keep: int = Field(ge=1, le=60)
     sources: List[str] = Field(min_length=1, max_length=20)
+    dest: str = Field("local", pattern=r"^(local|[a-z][a-z0-9-]{1,30})$")
 
 
 class Copy(BaseModel):
@@ -54,9 +55,9 @@ def status(user: str = Depends(current_user)):
 @router.put("/settings")
 def save(body: Settings, request: Request, user: str = Depends(current_user)):
     sources = [s.strip() for s in body.sources if s.strip()]
-    r = run("set", stdin=json.dumps({"schedule": body.schedule, "hour": body.hour, "keep": body.keep, "sources": sources}))
+    r = run("set", stdin=json.dumps({"schedule": body.schedule, "hour": body.hour, "keep": body.keep, "sources": sources, "dest": body.dest}))
     audit(user, request.client.host, "backup_settings", ok=(r.returncode == 0), schedule=body.schedule, keep=body.keep,
-          folders=len(sources))
+          folders=len(sources), dest=body.dest)
     must(r)
     return {"ok": True}
 

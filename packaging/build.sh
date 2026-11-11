@@ -17,8 +17,8 @@ say() { echo "==> $*"; }
 [[ "$VERSION" =~ ^[0-9][A-Za-z0-9.+~-]*$ ]] || die "invalid version: $VERSION"
 command -v dpkg-deb >/dev/null || die "dpkg-deb is required. Build this on Ubuntu or Debian."
 
-MODULES=(paths power mailer alerts metrics hardware logins backup processes smart cron clock certs reboot kernel sudolog packages diskusage app auth audit store system services logs updates firewall users terminal storage storage_admin fs network security journal units userunits create_user enroll_2fa sshkeys loginlock fleet actions bridge remote)
-HELPERS=(apt ufw users net disk userunits units backup proc smart cron time certs du)
+MODULES=(paths power mailer alerts metrics hardware logins backup processes smart cron clock certs reboot kernel sudolog packages diskusage shares app auth audit store system services logs updates firewall users terminal storage storage_admin fs network security journal units userunits create_user enroll_2fa sshkeys loginlock fleet actions bridge remote)
+HELPERS=(apt ufw users net disk userunits units backup proc smart cron time certs du share)
 
 say "Checking the source files"
 for m in "${MODULES[@]}"; do [ -f "$ROOT/$m.py" ] || die "missing $m.py in $ROOT"; done
@@ -131,7 +131,7 @@ Architecture: all
 Maintainer: $MAINT
 Installed-Size: $SIZE
 Depends: python3 (>= 3.10), python3-venv, nginx, openssl, sudo, curl, iproute2, util-linux, systemd, openssh-client, adduser
-Recommends: openssh-server, ufw, smartmontools, parted, lvm2, xfsprogs, e2fsprogs, mdadm, cryptsetup, open-iscsi, wireguard-tools, multipath-tools, targetcli-fb
+Recommends: cifs-utils, openssh-server, ufw, smartmontools, parted, lvm2, xfsprogs, e2fsprogs, mdadm, cryptsetup, open-iscsi, wireguard-tools, multipath-tools, targetcli-fb
 Suggests: squid, targetcli-fb
 Description: Web administration panel for Ubuntu and Debian servers
  A browser-based control panel: system overview, services, logs, software
