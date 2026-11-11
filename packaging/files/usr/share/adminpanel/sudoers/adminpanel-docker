@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-docker list, /usr/local/sbin/adminpanel-docker start *, /usr/local/sbin/adminpanel-docker stop *, /usr/local/sbin/adminpanel-docker restart *, /usr/local/sbin/adminpanel-docker logs *, /usr/local/sbin/adminpanel-docker check

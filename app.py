@@ -37,6 +37,7 @@ from sudolog import router as sudo_router
 from packages import router as packages_router
 from diskusage import router as du_router
 from shares import router as shares_router
+from containers import router as containers_router
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -83,6 +84,7 @@ app.include_router(sudo_router)
 app.include_router(packages_router)
 app.include_router(du_router)
 app.include_router(shares_router)
+app.include_router(containers_router)
 
 app.include_router(fleet_router)
 app.include_router(health_router)

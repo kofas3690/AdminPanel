@@ -1,0 +1,103 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Containers page (Docker): list containers, start, stop or restart one, read its log.
+
+Access to Docker is the same as root, so this helper allows only four things and nothing else: it cannot run,
+create, remove, copy files into or execute commands inside a container. A container is named by its full 64-letter id,
+which must be one that Docker itself lists."""
+import json, os, re, subprocess, sys
+
+DOCKER = "/usr/bin/docker"
+ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/root"}
+ID_RE = re.compile(r"[0-9a-f]{64}")
+VERBS = ("start", "stop", "restart")
+MAX = 500
+LOG_LINES = 300
+LOG_CAP = 200_000
+CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def docker(*args, timeout=30):
+    try:
+        return subprocess.run([DOCKER, *args], capture_output=True, text=True, errors="replace", env=ENV,
+                              stdin=subprocess.DEVNULL, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        die("Docker did not answer in time", 1)
+
+
+def cut(v, n=200):
+    return CTRL.sub("", str(v))[:n]
+
+
+def cmd_list():
+    if not os.path.exists(DOCKER):
+        print(json.dumps({"installed": False, "running": False, "containers": []}))
+        return
+    v = docker("version", "--format", "{{.Server.Version}}", timeout=15)
+    if v.returncode != 0:
+        err = (v.stderr or "").strip().splitlines()
+        print(json.dumps({"installed": True, "running": False, "containers": [],
+                          "error": cut(err[-1] if err else "the Docker service is not running")}))
+        return
+    r = docker("ps", "-a", "--no-trunc", "--format", "{{json .}}")
+    if r.returncode != 0:
+        die(cut((r.stderr or "docker ps failed").strip().splitlines()[-1]), 1)
+    out = []
+    for line in r.stdout.splitlines()[:MAX]:
+        try:
+            c = json.loads(line)
+        except ValueError:
+            continue
+        if not ID_RE.fullmatch(str(c.get("ID", ""))):
+            continue
+        out.append({"id": c["ID"], "name": cut(c.get("Names", "")), "image": cut(c.get("Image", "")),
+                    "state": cut(c.get("State", ""), 30), "status": cut(c.get("Status", "")),
+                    "ports": cut(c.get("Ports", ""), 300), "created": cut(c.get("CreatedAt", ""), 60)})
+    print(json.dumps({"installed": True, "running": True, "version": cut(v.stdout.strip(), 40), "containers": out}))
+
+
+def known(cid):
+    if not ID_RE.fullmatch(cid or ""):
+        die("invalid container id")
+    r = docker("ps", "-a", "-q", "--no-trunc")
+    if r.returncode != 0 or cid not in r.stdout.split():
+        die("Docker has no such container")
+
+
+def cmd_action(verb, cid):
+    if verb not in VERBS:
+        die("unsupported action")
+    known(cid)
+    r = docker(verb, cid, timeout=90)
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "failed").strip().splitlines()
+        die(cut(err[-1] if err else "failed", 240), 1)
+    print("ok")
+
+
+def cmd_logs(cid):
+    known(cid)
+    r = docker("logs", "--tail", str(LOG_LINES), "--timestamps", cid, timeout=30)
+    text = CTRL.sub("", ANSI.sub("", (r.stdout or "") + (r.stderr or "")))
+    print(text[-LOG_CAP:], end="")
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["list"]:
+        return cmd_list()
+    if a == ["check"]:
+        return print(json.dumps({"ok": True}))
+    if len(a) == 2 and a[0] == "logs":
+        return cmd_logs(a[1])
+    if len(a) == 2 and a[0] in VERBS:
+        return cmd_action(a[0], a[1])
+    die("usage: list | start ID | stop ID | restart ID | logs ID | check")
+
+
+main()
