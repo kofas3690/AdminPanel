@@ -1,5 +1,5 @@
 #!/bin/sh
-# Root helper for the Software updates page: "update" and "upgrade".
+# Root helper for the Software updates page: "update", "upgrade", and (3.2.0) "install NAME" / "remove NAME".
 #
 # The job runs as its own transient systemd unit (adminpanel-apt-job.service), NOT as a
 # child of the panel. Restarting or crashing the panel therefore cannot kill apt halfway
@@ -43,7 +43,66 @@ start_job() {
     echo "started"
 }
 
+# --- install / remove: the name is checked here, as root, whatever the panel sent ---------------
+# Packages whose removal would break the machine or the panel are never removed. The check is made on what the
+# removal would take with it (apt's own dry run), not just on the name asked for.
+PROTECTED_RE='^(adminpanel|sudo|openssh-server|openssh-client|nginx|nginx-common|nginx-core|systemd|systemd-sysv|apt|dpkg|libc6|python3|python3-minimal|netplan.io|cloud-init|grub-.*|linux-image-.*|linux-generic.*|linux-base|ubuntu-minimal|ubuntu-server|ubuntu-standard|ubuntu-desktop|ubuntu-desktop-minimal|ubuntu-server-minimal)$'
+
+valid_name() {
+    case "$1" in
+        ''|-*|*[!a-z0-9+.-]*) return 1 ;;
+    esac
+    [ "${#1}" -ge 2 ] && [ "${#1}" -le 100 ]
+}
+
+check_install() {
+    cand=$(apt-cache policy -- "$1" 2>/dev/null | sed -n 's/^  Candidate: //p')
+    if [ -z "$cand" ] || [ "$cand" = "(none)" ]; then
+        echo "There is no package called $1 that can be installed" >&2; exit 4
+    fi
+    sim=$(apt-get -s -y -o Debug::NoLocking=1 install -- "$1" 2>&1) || { echo "apt cannot install $1: $(echo "$sim" | tail -n 2 | tr '\n' ' ')" >&2; exit 4; }
+    if echo "$sim" | grep -q '^Remv '; then
+        echo "Installing $1 would remove other packages, so it was not started" >&2; exit 4
+    fi
+}
+
+check_remove() {
+    st=$(dpkg-query -W -f='${db:Status-Status}' -- "$1" 2>/dev/null || true)
+    [ "$st" = "installed" ] || { echo "$1 is not installed" >&2; exit 4; }
+    sim=$(apt-get -s -y -o Debug::NoLocking=1 remove -- "$1" 2>&1) || { echo "apt cannot remove $1" >&2; exit 4; }
+    for p in $(echo "$sim" | sed -n 's/^Remv \([^ ]*\).*/\1/p'); do
+        p=${p%%:*}
+        if echo "$p" | grep -Eq "$PROTECTED_RE"; then
+            echo "Removing $1 would also remove $p, which this machine needs. Not started." >&2; exit 4
+        fi
+        ess=$(dpkg-query -W -f='${Essential}${Priority}' -- "$p" 2>/dev/null || true)
+        case "$ess" in
+            yes*|*required*) echo "Removing $1 would also remove $p, which is essential. Not started." >&2; exit 4 ;;
+        esac
+    done
+}
+
 case "${1:-}" in
+  install)
+    valid_name "${2:-}" || { echo "That is not a valid package name" >&2; exit 2; }
+    [ "$#" -eq 2 ] || { echo "usage: $0 install NAME" >&2; exit 2; }
+    check_install "$2"
+    start_job "install $2" /usr/bin/apt-get -y \
+      -o DPkg::Lock::Timeout=120 \
+      -o Dpkg::Options::=--force-confdef \
+      -o Dpkg::Options::=--force-confold \
+      install -- "$2"
+    ;;
+  remove)
+    valid_name "${2:-}" || { echo "That is not a valid package name" >&2; exit 2; }
+    [ "$#" -eq 2 ] || { echo "usage: $0 remove NAME" >&2; exit 2; }
+    check_remove "$2"
+    start_job "remove $2" /usr/bin/apt-get -y \
+      -o DPkg::Lock::Timeout=120 \
+      -o Dpkg::Options::=--force-confdef \
+      -o Dpkg::Options::=--force-confold \
+      remove -- "$2"
+    ;;
   update)
     start_job update /usr/bin/apt-get update --error-on=any
     ;;
@@ -55,7 +114,7 @@ case "${1:-}" in
       upgrade
     ;;
   *)
-    echo "usage: $0 update|upgrade" >&2
+    echo "usage: $0 update|upgrade|install NAME|remove NAME" >&2
     exit 2
     ;;
 esac

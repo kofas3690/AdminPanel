@@ -32,7 +32,7 @@
     return e;
   };
   // VPN and Proxy are tabs under Networking, so that sidebar entry stays highlighted on their pages.
-  const SUBPAGES = { "/vpn.html": "/network.html", "/proxy.html": "/network.html", "/remote.html": "/fleet.html", "/logins.html": "/users.html", "/groups.html": "/users.html", "/cron.html": "/units.html", "/kernel.html": "/hardware.html", "/sudo.html": "/users.html" };
+  const SUBPAGES = { "/vpn.html": "/network.html", "/proxy.html": "/network.html", "/remote.html": "/fleet.html", "/logins.html": "/users.html", "/groups.html": "/users.html", "/cron.html": "/units.html", "/kernel.html": "/hardware.html", "/sudo.html": "/users.html", "/packages.html": "/updates.html" };
   const isHere = (href) =>
     location.pathname === href || SUBPAGES[location.pathname] === href || (href === "/" && location.pathname === "/index.html");
 

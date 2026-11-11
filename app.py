@@ -34,6 +34,7 @@ from certs import router as certs_router, start as certs_start
 from reboot import router as reboot_router
 from kernel import router as kernel_router
 from sudolog import router as sudo_router
+from packages import router as packages_router
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -77,6 +78,7 @@ app.include_router(certs_router)
 app.include_router(reboot_router)
 app.include_router(kernel_router)
 app.include_router(sudo_router)
+app.include_router(packages_router)
 
 app.include_router(fleet_router)
 app.include_router(health_router)

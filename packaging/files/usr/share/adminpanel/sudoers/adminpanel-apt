@@ -1,2 +1,2 @@
 # Installed by the adminpanel package.
-adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-apt update, /usr/local/sbin/adminpanel-apt upgrade
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-apt update, /usr/local/sbin/adminpanel-apt upgrade, /usr/local/sbin/adminpanel-apt install *, /usr/local/sbin/adminpanel-apt remove *

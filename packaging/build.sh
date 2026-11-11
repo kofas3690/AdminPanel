@@ -17,7 +17,7 @@ say() { echo "==> $*"; }
 [[ "$VERSION" =~ ^[0-9][A-Za-z0-9.+~-]*$ ]] || die "invalid version: $VERSION"
 command -v dpkg-deb >/dev/null || die "dpkg-deb is required. Build this on Ubuntu or Debian."
 
-MODULES=(paths power mailer alerts metrics hardware logins backup processes smart cron clock certs reboot kernel sudolog app auth audit store system services logs updates firewall users terminal storage storage_admin fs network security journal units userunits create_user enroll_2fa sshkeys loginlock fleet actions bridge remote)
+MODULES=(paths power mailer alerts metrics hardware logins backup processes smart cron clock certs reboot kernel sudolog packages app auth audit store system services logs updates firewall users terminal storage storage_admin fs network security journal units userunits create_user enroll_2fa sshkeys loginlock fleet actions bridge remote)
 HELPERS=(apt ufw users net disk userunits units backup proc smart cron time certs)
 
 say "Checking the source files"

@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Packages</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+  .scroll { max-height: 440px; overflow: auto; }
+  .small { font-size: 12px; color: var(--muted); }
+  .plan { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 16px; margin: 12px 0; max-width: 760px; }
+  .plan ul { margin: 4px 0 8px 18px; padding: 0; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; background: var(--ok); color: #fff; }
+  #q, #f { width: 280px; max-width: 100%; }
+  pre#box { max-height: 320px; overflow: auto; }
+</style>
+<p class="subtabs"><a href="/updates.html">Updates</a><a href="/packages.html" class="on">Packages</a></p>
+<h1>Packages</h1>
+<p class="muted">Find, install and remove software. You always see what a change will add or take away before anything
+happens. Packages this machine needs (and anything that would take them with it) cannot be removed, and an install that
+would remove other packages is refused. Changes use the same job runner as updates, so only one runs at a time.</p>
+<p id="err" class="crit"></p>
+
+<div id="plan" class="plan" hidden></div>
+<p id="status"></p>
+<pre id="box" hidden></pre>
+
+<h2>Find software to install</h2>
+<div class="toolbar"><input id="q" placeholder="Search, e.g. htop or image editor" maxlength="40" aria-label="Search packages" autocomplete="off"><button id="go">Search</button></div>
+<div class="tbl-wrap"><table>
+  <thead><tr><th>Package</th><th>What it is</th><th></th></tr></thead>
+  <tbody id="results"></tbody>
+</table></div>
+
+<h2>Installed packages</h2>
+<div class="toolbar"><input id="f" placeholder="Filter installed packages" maxlength="40" aria-label="Filter installed" autocomplete="off"><span id="count" class="muted"></span></div>
+<div class="scroll tbl-wrap"><table>
+  <thead><tr><th>Package</th><th>Version</th><th>What it is</th><th></th></tr></thead>
+  <tbody id="installed"></tbody>
+</table></div>
+<script src="/page/packages.js"></script>
