@@ -17,11 +17,13 @@
 </style>
 <p class="subtabs"><a href="/storage.html">Storage</a><a href="/usage.html">Disk usage</a><a href="/shares.html" class="on">Network shares</a></p>
 <h1>Network shares</h1>
-<p class="muted">Connect Windows (SMB) file shares, such as a NAS or another computer's shared folder. A share is either for
+<p class="muted">Connect Windows (SMB) or NFS file shares, such as a NAS or another computer's shared folder. A share is either for
 <b>backups</b> (only the administrator can see inside it, and the Backups page can store copies on it) or for the <b>File manager</b>
 (everyone with an account on this machine can read it, nobody can change it from here).</p>
 <p id="err" class="crit"></p>
 <p id="nocifs" class="crit" hidden>SMB support is not installed on this machine. Install the package <code>cifs-utils</code> on the
+<a href="/packages.html">Packages</a> page, then come back.</p>
+<p id="nonfs" class="crit" hidden>NFS support is not installed on this machine. Install the package <code>nfs-common</code> on the
 <a href="/packages.html">Packages</a> page, then come back.</p>
 
 <div class="tbl-wrap"><table>
@@ -33,25 +35,27 @@
 <h2>Add a share</h2>
 <form id="form" class="card" autocomplete="off">
   <div class="row">
+    <label>Type
+      <select id="protocol"><option value="smb">SMB (Windows share)</option><option value="nfs">NFS</option></select></label>
     <label>Name <input id="name" type="text" size="16" maxlength="31" placeholder="nas-backup" pattern="[a-z][a-z0-9\-]{1,30}" title="2 to 31 lower-case letters, digits or -, starting with a letter" required></label>
     <label>Server <input id="server" type="text" size="22" maxlength="253" placeholder="nas.local or 192.168.1.20" required></label>
-    <label>Share <input id="share" type="text" size="18" maxlength="80" placeholder="backups" required></label>
+    <label><span id="sharelabel">Share</span> <input id="share" type="text" size="18" maxlength="250" placeholder="backups" required></label>
   </div>
-  <div class="row">
+  <div class="row" id="creds">
     <label>User name <input id="user" type="text" size="16" maxlength="64"></label>
     <label>Password <input id="password" type="password" size="16" maxlength="128" autocomplete="new-password"></label>
     <label>Domain (optional) <input id="domain" type="text" size="14" maxlength="64"></label>
   </div>
-  <p class="muted">Leave the user name empty only for a share that allows guests.</p>
+  <p class="muted" id="credhint">Leave the user name empty only for a share that allows guests.</p>
   <div class="row">
     <label>Use it for
       <select id="access"><option value="backup">Backups (only root can see inside)</option><option value="browse">File manager (everyone can read)</option></select></label>
-    <label>SMB version
+    <label><span id="verslabel">SMB version</span>
       <select id="vers"><option value="3.1.1">3.1.1 (newest, most secure)</option><option value="3.0">3.0</option><option value="2.1">2.1 (older servers)</option></select></label>
   </div>
   <button class="primary">Add share</button> <span id="addmsg" class="muted"></span>
 </form>
-<p class="muted">The password is stored in a file only root can read and is never shown again. Shares are not connected at start-up: use
+<p class="muted">SMB passwords are stored in a file only root can read and are never shown again. NFS needs no password here: the server decides who may mount an export, usually by this machine's address, so allow this machine's address in the server's exports. If the server squashes root, a backup share may refuse the write; use <code>no_root_squash</code> for the backup export. Shares are not connected at start-up: use
 <b>Connect</b>, or let a backup connect its share when it runs. They appear under <code>/mnt/adminpanel/NAME</code>.
 Use <b>Test</b> to check the address and password without leaving the share connected.</p>
 <script src="/page/shares.js"></script>

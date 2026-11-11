@@ -35,12 +35,14 @@ async function act(verb, s, btn, label) {
 
 function draw(d) {
   $("nocifs").hidden = d.cifs;
+  $("nonfs").hidden = d.nfs;
   const tb = $("rows"); tb.replaceChildren();
   if (!d.shares.length) { const tr = el("tr"), td = el("td", "No shares yet.", "muted"); td.colSpan = 5; tr.append(td); tb.append(tr); }
   for (const s of d.shares) {
     const tr = el("tr");
     tr.append(el("td", s.name));
-    const sv = el("td", "//" + s.server + "/" + s.share); if (s.user) sv.append(el("div", (s.domain ? s.domain + "\\" : "") + s.user, "muted")); tr.append(sv);
+    const nfs = s.protocol === "nfs";
+    const sv = el("td", nfs ? s.server + ":" + s.share : "//" + s.server + "/" + s.share); sv.append(el("div", (nfs ? "NFS " : "SMB ") + s.vers, "muted")); if (s.user) sv.append(el("div", (s.domain ? s.domain + "\\" : "") + s.user, "muted")); tr.append(sv);
     tr.append(el("td", s.access === "backup" ? "Backups" : "File manager (read only)"));
     const st = el("td");
     if (s.mounted) { st.append(el("span", "Connected", "ok")); if (s.total) st.append(el("div", fmtBytes(s.free) + " free of " + fmtBytes(s.total), "muted")); }
@@ -67,13 +69,27 @@ async function load() {
 
 $("form").addEventListener("submit", async (e) => {
   e.preventDefault(); $("err").textContent = ""; $("addmsg").textContent = "";
-  const body = { name: $("name").value.trim(), server: $("server").value.trim(), share: $("share").value.trim(), user: $("user").value.trim(),
+  const body = { protocol: $("protocol").value, name: $("name").value.trim(), server: $("server").value.trim(), share: $("share").value.trim(), user: $("user").value.trim(),
     password: $("password").value, domain: $("domain").value.trim(), vers: $("vers").value, access: $("access").value };
   const r = await send("POST", "/api/shares", body);
   if (!r.ok) { $("err").textContent = await errText(r); return; }
   $("password").value = "";
   $("addmsg").textContent = "Added. Use Test to check it.";
-  $("form").reset();
+  $("form").reset(); proto();
   load();
 });
+const SMBV = [["3.1.1", "3.1.1 (newest, most secure)"], ["3.0", "3.0"], ["2.1", "2.1 (older servers)"]];
+const NFSV = [["4.2", "4.2 (newest)"], ["4.1", "4.1"], ["4.0", "4.0"], ["3", "3 (older servers)"]];
+function proto() {
+  const nfs = $("protocol").value === "nfs";
+  $("sharelabel").textContent = nfs ? "Export folder" : "Share";
+  $("share").placeholder = nfs ? "/srv/backups" : "backups";
+  $("verslabel").textContent = nfs ? "NFS version" : "SMB version";
+  $("creds").hidden = nfs; $("credhint").hidden = nfs;
+  const v = $("vers"); v.replaceChildren();
+  for (const [val, text] of nfs ? NFSV : SMBV) v.append(new Option(text, val));
+  if (nfs) { $("user").value = ""; $("password").value = ""; $("domain").value = ""; }
+}
+$("protocol").onchange = proto;
+proto();
 load();

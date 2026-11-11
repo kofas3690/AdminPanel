@@ -1,4 +1,4 @@
-"""Network shares: SMB (Windows file) shares mounted on this machine, for backups or for the File manager.
+"""Network shares: SMB (Windows file) and NFS shares mounted on this machine, for backups or for the File manager.
 
 The panel never sees a mount command or touches a credentials file. A root helper keeps the list of shares and each
 share's password in root-only files, checks every value again and does the mounting. Passwords are sent to it on
@@ -21,12 +21,13 @@ NAME = r"^[a-z][a-z0-9-]{1,30}$"
 
 class New(BaseModel):
     name: str = Field(pattern=NAME)
+    protocol: Literal["smb", "nfs"] = "smb"
     server: str = Field(min_length=1, max_length=253)
-    share: str = Field(min_length=1, max_length=80)
+    share: str = Field(min_length=1, max_length=250)
     user: str = Field("", max_length=64)
     password: str = Field("", max_length=128)
     domain: str = Field("", max_length=64)
-    vers: Literal["3.1.1", "3.0", "2.1"] = "3.1.1"
+    vers: Literal["3.1.1", "3.0", "2.1", "4.2", "4.1", "4.0", "3"] = "3.1.1"
     access: Literal["backup", "browse"] = "backup"
 
 
@@ -59,7 +60,7 @@ def listing(user: str = Depends(current_user)):
 @router.post("")
 def add(body: New, request: Request, user: str = Depends(current_user)):
     r = run("add", stdin=json.dumps(body.model_dump()))
-    audit(user, request.client.host, "share_add", target=body.name, server=body.server, share=body.share,
+    audit(user, request.client.host, "share_add", target=body.name, protocol=body.protocol, server=body.server, share=body.share,
           access=body.access, ok=(r.returncode == 0))
     must(r)
     return {"ok": True}

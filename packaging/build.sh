@@ -131,7 +131,7 @@ Architecture: all
 Maintainer: $MAINT
 Installed-Size: $SIZE
 Depends: python3 (>= 3.10), python3-venv, nginx, openssl, sudo, curl, iproute2, util-linux, systemd, openssh-client, adduser
-Recommends: cifs-utils, openssh-server, ufw, smartmontools, parted, lvm2, xfsprogs, e2fsprogs, mdadm, cryptsetup, open-iscsi, wireguard-tools, multipath-tools, targetcli-fb
+Recommends: cifs-utils, nfs-common, openssh-server, ufw, smartmontools, parted, lvm2, xfsprogs, e2fsprogs, mdadm, cryptsetup, open-iscsi, wireguard-tools, multipath-tools, targetcli-fb
 Suggests: squid, targetcli-fb
 Description: Web administration panel for Ubuntu and Debian servers
  A browser-based control panel: system overview, services, logs, software

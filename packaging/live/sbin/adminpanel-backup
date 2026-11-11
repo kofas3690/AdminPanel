@@ -67,7 +67,7 @@ def share_mounted(name):
             for line in f:
                 left, _, right = line.partition(" - ")
                 parts = left.split(" ")
-                if len(parts) > 4 and parts[4] == mp and right.split(" ")[0] in ("cifs", "smb3"):
+                if len(parts) > 4 and parts[4] == mp and right.split(" ")[0] in ("cifs", "smb3", "nfs", "nfs4"):
                     return True
     except OSError:
         pass
