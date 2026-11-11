@@ -38,7 +38,10 @@ function connect() {
   let opened = false;
   ws = sock;
   setState("connecting…", true);
-  sock.onopen = () => { opened = true; setState("connected", true); term.focus(); };
+  sock.onopen = () => {
+    opened = true; setState("connected", true); term.focus();
+    try { localStorage.setItem("termUser", user); } catch (e) {}
+  };
   sock.onmessage = (e) => {
     if (e.data instanceof ArrayBuffer) term.write(new Uint8Array(e.data));
   };
@@ -61,5 +64,14 @@ term.onResize(({ cols, rows }) => {
 });
 
 window.addEventListener("resize", () => fit.fit());
+/* Start with the account used last time in this browser; empty on a first visit. */
+(function () {
+  const box = document.getElementById("luser");
+  try { box.value = localStorage.getItem("termUser") || ""; } catch (e) {}
+  if (!box.value) box.focus();
+})();
 document.getElementById("connect").onclick = connect;
+{
+  document.getElementById("luser").addEventListener("keydown", (e) => { if (e.key === "Enter") connect(); });
+}
 document.getElementById("disconnect").onclick = () => { if (ws) ws.close(); };
