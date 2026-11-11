@@ -1,0 +1,119 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Disk usage page: how much space each item directly inside a folder takes.
+
+Read only and metadata only: it never opens a file, never follows a symlink, stays on the one filesystem the folder is
+on, counts hard-linked files once, and stops at a time and entry limit (reporting that the answer is partial)."""
+import json, os, stat, sys, time
+
+LIMIT_SECONDS = 25
+LIMIT_ENTRIES = 3_000_000
+TOP = 60
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def clean(path):
+    if not path.startswith("/") or "\0" in path or len(path) > 1024:
+        die("The folder must be an absolute path")
+    norm = os.path.normpath(path)
+    if norm.startswith("//"):
+        norm = "/" + norm.lstrip("/")
+    if os.path.realpath(norm) != norm:
+        die("That path goes through a symlink")
+    try:
+        st = os.lstat(norm)
+    except OSError:
+        die("That folder does not exist", 1)
+    if not stat.S_ISDIR(st.st_mode):
+        die("That is not a folder", 1)
+    return norm, st.st_dev
+
+
+class Walk:
+    def __init__(self, dev):
+        self.dev, self.seen, self.entries, self.partial = dev, set(), 0, False
+        self.deadline = time.monotonic() + LIMIT_SECONDS
+
+    def size(self, path, st):
+        """Disk space used by an item (a file, or a whole folder tree), in bytes, plus the number of files."""
+        if not stat.S_ISDIR(st.st_mode):
+            if st.st_nlink > 1:
+                key = (st.st_dev, st.st_ino)
+                if key in self.seen:
+                    return 0, 0
+                self.seen.add(key)
+            return st.st_blocks * 512, 1
+        total, files = st.st_blocks * 512, 0
+        stack = [path]
+        while stack:
+            d = stack.pop()
+            try:
+                it = os.scandir(d)
+            except OSError:
+                continue
+            with it:
+                for e in it:
+                    self.entries += 1
+                    if self.entries > LIMIT_ENTRIES or time.monotonic() > self.deadline:
+                        self.partial = True
+                        return total, files
+                    try:
+                        s = e.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if s.st_dev != self.dev:
+                        continue
+                    if stat.S_ISDIR(s.st_mode):
+                        total += s.st_blocks * 512
+                        stack.append(e.path)
+                    else:
+                        if s.st_nlink > 1:
+                            key = (s.st_dev, s.st_ino)
+                            if key in self.seen:
+                                continue
+                            self.seen.add(key)
+                        total += s.st_blocks * 512
+                        files += 1
+        return total, files
+
+
+def cmd_scan(path):
+    norm, dev = clean(path)
+    w = Walk(dev)
+    items, total = [], 0
+    try:
+        it = os.scandir(norm)
+    except OSError:
+        die("That folder cannot be read", 1)
+    with it:
+        for e in it:
+            try:
+                s = e.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if s.st_dev != dev:
+                items.append({"name": e.name[:255], "size": 0, "files": 0, "kind": "mount"})
+                continue
+            size, files = w.size(e.path, s)
+            kind = "dir" if stat.S_ISDIR(s.st_mode) else "link" if stat.S_ISLNK(s.st_mode) else "file"
+            items.append({"name": e.name[:255], "size": size, "files": files, "kind": kind})
+            total += size
+            if w.partial:
+                break
+    items.sort(key=lambda x: -x["size"])
+    print(json.dumps({"path": norm, "total": total, "count": len(items), "partial": w.partial, "items": items[:TOP]}))
+
+
+def main():
+    a = sys.argv[1:]
+    if len(a) == 2 and a[0] == "scan":
+        return cmd_scan(a[1])
+    if a == ["check"]:
+        return print(json.dumps({"ok": True}))
+    die("usage: scan PATH | check")
+
+
+main()
