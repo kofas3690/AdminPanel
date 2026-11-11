@@ -17,7 +17,7 @@
   .ok { color: var(--ok); } .bad { color: var(--crit, #e5534b); }
 </style>
 <h1>Backups</h1>
-<p class="muted">Saves copies of the folders you choose, on a schedule or on demand. Copies are stored in a place only the administrator (root) can read: this machine, or a network share you set up.</p>
+<p class="muted">Saves copies of the folders you choose, on a schedule or on demand. Copies are stored in a place only the administrator (root) can read: this machine, a network share or a disk mounted under /mnt.</p>
 <p id="err" class="crit"></p>
 
 <div class="card">
@@ -38,7 +38,8 @@
     <textarea id="sources" spellcheck="false" maxlength="8000"></textarea></label>
   <label>Store copies on
     <select id="dest"><option value="local">This machine (/var/backups/adminpanel)</option></select></label>
-  <p class="muted">To store copies on another computer, add a Windows (SMB) share for backups on the <a href="/shares.html">Network shares</a> page.</p>
+  <p class="muted">To store copies on another computer, add a Windows (SMB) share for backups on the <a href="/shares.html">Network shares</a> page.
+  To use another disk, such as an iSCSI disk, connect, format and mount it on the <a href="/storage.html">Storage</a> page (it must appear under <code>/mnt</code>); it is then listed here.</p>
   <div class="row">
     <label>Schedule
       <select id="schedule"><option value="off">Off (manual only)</option><option value="daily">Every day</option><option value="weekly">Every week</option></select></label>

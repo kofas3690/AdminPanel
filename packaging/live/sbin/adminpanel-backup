@@ -13,7 +13,9 @@ SHARES = "/var/lib/adminpanel/shares.json"
 SHARE_HELPER = "/usr/local/sbin/adminpanel-share"
 MOUNTS = "/mnt/adminpanel"
 MOUNTINFO = "/proc/self/mountinfo"
-DEST_RE = re.compile(r"local|[a-z][a-z0-9-]{1,30}")
+DEST_RE = re.compile(r"local|[a-z][a-z0-9-]{1,30}|mnt:[a-z0-9][a-z0-9_.-]{0,62}")
+DISK_FS = ("ext4", "ext3", "ext2", "xfs", "btrfs", "f2fs")      # file systems that keep Unix permissions
+DISK_PARENT = "/mnt"
 STATE = "/var/lib/adminpanel"
 CONF = STATE + "/backup.json"
 LAST = STATE + "/backup-last.json"
@@ -72,8 +74,46 @@ def share_mounted(name):
     return False
 
 
+def unesc(v):
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), v)
+
+
+def disks():
+    """Disks mounted directly under /mnt (for example an iSCSI disk mounted on the Storage page). Only whole file
+    systems that keep Unix permissions count: not bind mounts, not network shares, not FAT or NTFS."""
+    out = {}
+    try:
+        with open(MOUNTINFO) as f:
+            for line in f:
+                left, _, right = line.partition(" - ")
+                p = left.split(" ")
+                fs = right.split(" ")[0]
+                if len(p) > 4 and unesc(p[3]) == "/" and fs in DISK_FS:
+                    mp = unesc(p[4])
+                    if os.path.dirname(mp) == DISK_PARENT and mp != MOUNTS:
+                        out[os.path.basename(mp)] = {"name": "mnt:" + os.path.basename(mp), "path": mp, "fstype": fs}
+    except OSError:
+        pass
+    return out
+
+
+def targets():
+    res = []
+    for d in disks().values():
+        try:
+            u = shutil.disk_usage(d["path"])
+            res.append(dict(d, total=u.total, free=u.free))
+        except OSError:
+            pass
+    return sorted(res, key=lambda d: d["path"])
+
+
 def dest_dir(c):
-    return LOCAL_DEST if c["dest"] == "local" else MOUNTS + "/" + c["dest"] + "/adminpanel-backups"
+    if c["dest"] == "local":
+        return LOCAL_DEST
+    if c["dest"].startswith("mnt:"):
+        return DISK_PARENT + "/" + c["dest"][4:] + "/adminpanel-backups"
+    return MOUNTS + "/" + c["dest"] + "/adminpanel-backups"
 
 
 def use_dest(c, connect=False):
@@ -83,6 +123,8 @@ def use_dest(c, connect=False):
     DEST = dest_dir(c)
     if c["dest"] == "local":
         return True
+    if c["dest"].startswith("mnt:"):
+        return c["dest"][4:] in disks()
     if c["dest"] not in backup_shares():
         die("the backup destination is not a known backup share")
     if connect and not share_mounted(c["dest"]):
@@ -124,7 +166,10 @@ def cmd_set():
         die("choose 1 to 20 folders")
     if not isinstance(c["dest"], str) or not DEST_RE.fullmatch(c["dest"]):
         die("invalid destination")
-    if c["dest"] != "local" and c["dest"] not in backup_shares():
+    if c["dest"].startswith("mnt:"):
+        if c["dest"][4:] not in disks():
+            die("that disk is not mounted under /mnt (mount it on the Storage page first)")
+    elif c["dest"] != "local" and c["dest"] not in backup_shares():
         die("choose a share that is set up for backups on the Network shares page")
     seen = []
     for p in c["sources"]:
@@ -188,7 +233,7 @@ def cmd_status():
         except OSError:
             pass
     print(json.dumps({"config": c, "archives": archives() if ready else [], "free": free, "total": total,
-                      "last": last(), "running": busy, "dest_path": DEST, "dest_ready": ready}))
+                      "last": last(), "running": busy, "dest_path": DEST, "dest_ready": ready, "targets": targets()}))
 
 
 def record(ok, **kw):
@@ -209,6 +254,8 @@ def make_backup():
         os.umask(0o077)
         try:
             if not use_dest(c, connect=True):
+                if c["dest"].startswith("mnt:"):
+                    die("the disk %s/%s is not mounted. Mount it on the Storage page." % (DISK_PARENT, c["dest"][4:]))
                 die("the backup share \"%s\" is not connected%s. Check it on the Network shares page." %
                     (c["dest"], (" (" + LASTMSG[0] + ")") if LASTMSG[0] else ""))
         except SystemExit:
@@ -291,7 +338,7 @@ def cmd_start():
 
 def known(name):
     if not use_dest(load()):
-        die("the backup share is not connected")
+        die("the backup destination is not connected")
     if not NAME_RE.fullmatch(name) or not os.path.isfile(os.path.join(DEST, name)):
         die("no such backup")
     return os.path.join(DEST, name)

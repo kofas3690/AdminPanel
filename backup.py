@@ -23,7 +23,7 @@ class Settings(BaseModel):
     hour: int = Field(ge=0, le=23)
     keep: int = Field(ge=1, le=60)
     sources: List[str] = Field(min_length=1, max_length=20)
-    dest: str = Field("local", pattern=r"^(local|[a-z][a-z0-9-]{1,30})$")
+    dest: str = Field("local", pattern=r"^(local|[a-z][a-z0-9-]{1,30}|mnt:[a-z0-9][a-z0-9_.-]{0,62})$")
 
 
 class Copy(BaseModel):

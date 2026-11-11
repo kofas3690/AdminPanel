@@ -33,9 +33,11 @@ function drawState(d) {
   else if (!d.last) kv(tb, "Last backup", "No backup has run yet");
   else if (d.last.ok) kv(tb, "Last backup", when(d.last.t) + ", " + fmtBytes(d.last.size) + (d.last.warning ? " (a file changed while it was read)" : ""), "ok");
   else kv(tb, "Last backup", "Failed on " + when(d.last.t) + ": " + (d.last.error || "unknown error"), "bad");
-  if (c.dest !== "local" && !d.dest_ready) kv(tb, "Stored on", "Network share \"" + c.dest + "\": not connected right now. It is connected automatically when a backup starts.", "bad");
-  else kv(tb, "Stored on", c.dest === "local" ? "This machine" : "Network share \"" + c.dest + "\"");
-  if (d.dest_ready) kv(tb, "Free space", fmtBytes(d.free) + " of " + fmtBytes(d.total) + " on the backup " + (c.dest === "local" ? "disk" : "share"));
+  const disk = c.dest.startsWith("mnt:");
+  const label = c.dest === "local" ? "This machine" : disk ? "Disk /mnt/" + c.dest.slice(4) : "Network share \"" + c.dest + "\"";
+  if (c.dest !== "local" && !d.dest_ready) kv(tb, "Stored on", label + ": " + (disk ? "not mounted right now. Mount it on the Storage page." : "not connected right now. It is connected automatically when a backup starts."), "bad");
+  else kv(tb, "Stored on", label);
+  if (d.dest_ready) kv(tb, "Free space", fmtBytes(d.free) + " of " + fmtBytes(d.total) + " on the backup " + (c.dest === "local" || disk ? "disk" : "share"));
   $("now").disabled = d.running;
   $("nowmsg").textContent = d.running ? "A backup is running." : "";
 }
@@ -68,14 +70,15 @@ function drawCopies(d) {
   r.append(" (create the folder first), then copy back what you need. Copies are readable only by root, so this page cannot restore for you.");
 }
 
-async function fillDest(current) {
+async function fillDest(current, targets) {
   const sel = $("dest");
   while (sel.options.length > 1) sel.remove(1);
   try {
     const r = await api("/api/shares");
     if (r.ok) for (const s of (await r.json()).shares) if (s.access === "backup") sel.append(new Option("Network share: " + s.name + " (" + s.server + ")", s.name));
   } catch (e) {}
-  if (current !== "local" && ![...sel.options].some((o) => o.value === current)) sel.append(new Option("Network share: " + current + " (missing)", current));
+  for (const t of targets || []) sel.append(new Option("Disk " + t.path + " (" + t.fstype + ", " + fmtBytes(t.free) + " free)", t.name));
+  if (current !== "local" && ![...sel.options].some((o) => o.value === current)) sel.append(new Option((current.startsWith("mnt:") ? "Disk /mnt/" + current.slice(4) : "Network share: " + current) + " (not available)", current));
   sel.value = current;
 }
 
@@ -86,7 +89,7 @@ async function load(fillForm) {
   drawState(d); drawCopies(d);
   if (fillForm) {
     $("sources").value = d.config.sources.join("\n");
-    await fillDest(d.config.dest);
+    await fillDest(d.config.dest, d.targets);
     $("schedule").value = d.config.schedule; $("hour").value = String(d.config.hour); $("keep").value = d.config.keep;
   }
   clearTimeout(poll);
