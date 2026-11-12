@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/seccheck")
 HELPER = "/usr/local/sbin/adminpanel-audit"
 SUDO = "/usr/bin/sudo"
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
-LINKS = {"/", "/firewall.html", "/blocked.html", "/autoupdates.html", "/users.html", "/clock.html", ""}
+LINKS = {"/", "/firewall.html", "/blocked.html", "/autoupdates.html", "/users.html", "/clock.html", "/sshkeys.html", ""}
 
 
 @router.get("")

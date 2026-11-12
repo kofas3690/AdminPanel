@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-sshkeys users, /usr/local/sbin/adminpanel-sshkeys list *, /usr/local/sbin/adminpanel-sshkeys add *, /usr/local/sbin/adminpanel-sshkeys remove *, /usr/local/sbin/adminpanel-sshkeys check

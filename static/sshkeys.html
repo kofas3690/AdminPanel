@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SSH keys</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  td.fp { font-family: monospace; font-size: 12px; overflow-wrap: anywhere; }
+  textarea { width: 100%; max-width: 760px; min-height: 90px; font-family: monospace; font-size: 12px; }
+  form.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+</style>
+<p class="subtabs"><a href="/users.html">Users</a><a href="/logins.html">Login history</a><a href="/groups.html">Groups</a><a href="/sudo.html">Sudo activity</a><a href="/sshkeys.html" class="on">SSH keys</a><a href="/seccheck.html">Security check</a></p>
+<h1>SSH keys</h1>
+<p class="muted">An SSH key lets a person sign in over SSH without typing a password, and is much harder to guess than a password. Each person
+makes a key pair on their own computer (<code>ssh-keygen -t ed25519</code>) and gives you the <b>public</b> half, the file ending in
+<code>.pub</code>. Never ask for or paste the private key. Once keys work, you can turn password sign-in off in the SSH settings (see the Security check).</p>
+<p id="err" class="crit"></p>
+<p id="msg" class="muted"></p>
+<form class="row" id="pick"><label>Account <select id="user"></select></label></form>
+<p id="other" class="muted"></p>
+<div class="tbl-wrap"><table>
+  <thead><tr><th>Type</th><th>Fingerprint</th><th>Comment</th><th></th></tr></thead>
+  <tbody id="rows"></tbody>
+</table></div>
+<h2>Add a key</h2>
+<form id="addform">
+  <p><textarea id="key" placeholder="ssh-ed25519 AAAAC3Nza... name@computer" spellcheck="false" required></textarea></p>
+  <p><button class="primary">Add key</button></p>
+</form>
+<script src="/page/sshkeys.js"></script>

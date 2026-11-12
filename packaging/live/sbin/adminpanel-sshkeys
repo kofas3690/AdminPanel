@@ -1,0 +1,182 @@
+#!/usr/bin/python3 -I
+"""Root helper for the SSH keys page: list, add and remove the public keys in a user's ~/.ssh/authorized_keys.
+
+The file is only ever touched AFTER dropping to that user's own id, so the kernel itself stops a symlink or a strange
+home folder from reaching anything the user could not already reach. A new key must be one plain line (no options such
+as command=), of a known type, with a valid key body."""
+import base64, binascii, hashlib, json, os, pwd, re, stat, sys
+
+MIN_UID = 1000
+NAME_RE = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
+FP_RE = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
+TYPES = ("ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "ssh-rsa",
+         "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com")
+CTRL = re.compile(r"[\x00-\x1f\x7f]")
+MAX_KEYS = 200
+MAX_LINE = 8192
+BAD_SHELLS = ("/usr/sbin/nologin", "/sbin/nologin", "/bin/false", "/usr/bin/false")
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def account(name):
+    if not NAME_RE.fullmatch(name or ""):
+        die("invalid user name")
+    try:
+        p = pwd.getpwnam(name)
+    except KeyError:
+        die("no such user", 1)
+    if p.pw_uid < MIN_UID or p.pw_shell in BAD_SHELLS or not p.pw_dir.startswith("/"):
+        die("this account cannot sign in over SSH or is a system account", 1)
+    return p
+
+
+def drop(p):
+    os.setgroups([])
+    os.setegid(p.pw_gid)
+    os.seteuid(p.pw_uid)
+    os.umask(0o077)
+
+
+def parse(line):
+    """Return (type, fingerprint, comment) for a plain key line, else None (options, comments, junk)."""
+    parts = line.strip().split(None, 2)
+    if len(parts) < 2 or parts[0] not in TYPES:
+        return None
+    try:
+        blob = base64.b64decode(parts[1], validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if len(blob) < 8 or len(blob) > 4096:
+        return None
+    n = int.from_bytes(blob[:4], "big")
+    if blob[4:4 + n].decode("latin-1") != parts[0]:
+        return None
+    fp = "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
+    return parts[0], fp, CTRL.sub("", parts[2] if len(parts) > 2 else "")[:120]
+
+
+def open_dir(path_parent_fd, name, create):
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=path_parent_fd)
+    except FileNotFoundError:
+        if not create:
+            return None
+        os.mkdir(name, 0o700, dir_fd=path_parent_fd)
+        fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=path_parent_fd)
+    except OSError:
+        die("The .ssh folder is not a normal folder (a link?), so it was left alone", 1)
+    return fd
+
+
+def read_lines(ssh_fd):
+    if ssh_fd is None:
+        return []
+    try:
+        fd = os.open("authorized_keys", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=ssh_fd)
+    except FileNotFoundError:
+        return []
+    except OSError:
+        die("authorized_keys is not a normal file (a link?), so it was left alone", 1)
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            die("authorized_keys is not a normal file", 1)
+        return f.read(2_000_000).decode("utf-8", "replace").splitlines()
+
+
+def write_lines(ssh_fd, lines):
+    tmp = ".authorized_keys.adminpanel"
+    try:
+        os.unlink(tmp, dir_fd=ssh_fd)
+    except OSError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=ssh_fd)
+    with os.fdopen(fd, "w") as f:
+        f.write("".join(l + "\n" for l in lines))
+    os.rename(tmp, "authorized_keys", src_dir_fd=ssh_fd, dst_dir_fd=ssh_fd)
+
+
+def home_fd(p):
+    try:
+        fd = os.open(p.pw_dir, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        die("The home folder cannot be opened", 1)
+    return fd
+
+
+def cmd_users():
+    out = []
+    for p in pwd.getpwall():
+        if p.pw_uid >= MIN_UID and p.pw_uid < 65534 and p.pw_shell not in BAD_SHELLS and NAME_RE.fullmatch(p.pw_name):
+            out.append(p.pw_name)
+    print(json.dumps({"users": sorted(out)}))
+
+
+def cmd_list(name):
+    p = account(name)
+    drop(p)
+    h = home_fd(p)
+    s = open_dir(h, ".ssh", False)
+    keys = []
+    for line in read_lines(s):
+        k = parse(line)
+        if k:
+            keys.append({"type": k[0], "fingerprint": k[1], "comment": k[2]})
+    other = sum(1 for l in read_lines(s) if l.strip() and not l.lstrip().startswith("#") and not parse(l))
+    print(json.dumps({"user": name, "keys": keys[:MAX_KEYS], "other_lines": other}))
+
+
+def cmd_add(name):
+    p = account(name)
+    line = " ".join(sys.stdin.read(MAX_LINE + 1).split())
+    if len(line) > MAX_LINE or "\n" in line:
+        die("The key is too long")
+    k = parse(line)
+    if not k:
+        die("This is not a plain public key. Paste one line that starts with ssh-ed25519, ecdsa-sha2-… or ssh-rsa (no options in front of it).", 1)
+    drop(p)
+    h = home_fd(p)
+    s = open_dir(h, ".ssh", True)
+    lines = read_lines(s)
+    if any((parse(l) or (0, 0))[1] == k[1] for l in lines):
+        die("This key is already there", 1)
+    if sum(1 for l in lines if parse(l)) >= MAX_KEYS:
+        die("Too many keys", 1)
+    write_lines(s, lines + [line])
+    print(json.dumps({"fingerprint": k[1]}))
+
+
+def cmd_remove(name, fp):
+    p = account(name)
+    if not FP_RE.fullmatch(fp or ""):
+        die("invalid fingerprint")
+    drop(p)
+    h = home_fd(p)
+    s = open_dir(h, ".ssh", False)
+    lines = read_lines(s)
+    keep = [l for l in lines if (parse(l) or (0, None))[1] != fp]
+    if len(keep) == len(lines):
+        die("That key is not in the file", 1)
+    write_lines(s, keep)
+    print("ok")
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["users"]:
+        return cmd_users()
+    if a == ["check"]:
+        return print(json.dumps({"ok": True}))
+    if len(a) == 2 and a[0] == "list":
+        return cmd_list(a[1])
+    if len(a) == 2 and a[0] == "add":
+        return cmd_add(a[1])
+    if len(a) == 3 and a[0] == "remove":
+        return cmd_remove(a[1], a[2])
+    die("usage: users | list USER | add USER (key on stdin) | remove USER FINGERPRINT | check")
+
+
+main()

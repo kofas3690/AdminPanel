@@ -61,7 +61,7 @@ def check_ssh_password():
     if v is None:
         return item("ssh_password", "SSH password sign-in", "warn", "Could not read the SSH server settings.")
     if v == "yes":
-        return item("ssh_password", "SSH password sign-in", "warn", "Passwords are accepted over SSH, so anyone on the internet can try to guess one. Keys are safer: set PasswordAuthentication to no once your key works.")
+        return item("ssh_password", "SSH password sign-in", "warn", "Passwords are accepted over SSH, so anyone on the internet can try to guess one. Keys are safer: add your key on the SSH keys page, then set PasswordAuthentication to no.", "/sshkeys.html")
     return item("ssh_password", "SSH password sign-in", "ok", "SSH accepts keys only.")
 
 
