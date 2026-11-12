@@ -1,0 +1,161 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Security check page: run a short fixed list of read-only hardening checks and report each as
+ok, warn or fail. It takes no input, changes nothing, and never prints a password hash or any file contents beyond a
+yes or no."""
+import json, os, re, subprocess, sys
+
+SSHD = "/usr/sbin/sshd"
+UFW = "/usr/sbin/ufw"
+SYSTEMCTL = "/usr/bin/systemctl"
+TIMEDATECTL = "/usr/bin/timedatectl"
+SHADOW = "/etc/shadow"
+PASSWD = "/etc/passwd"
+AUTOUPG = "/etc/apt/apt.conf.d/20auto-upgrades"
+REBOOT_FLAG = "/var/run/reboot-required"
+UPG_PROGRAM = "/usr/bin/unattended-upgrade"
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+CTRL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def run(*args, timeout=15):
+    try:
+        return subprocess.run(list(args), capture_output=True, text=True, errors="replace", env=ENV,
+                              stdin=subprocess.DEVNULL, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def item(cid, title, status, detail, where=""):
+    return {"id": cid, "title": title, "status": status, "detail": detail, "where": where}
+
+
+def sshd_setting(key):
+    r = run(SSHD, "-T")
+    if not r or r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        k, _, v = line.partition(" ")
+        if k.lower() == key:
+            return v.strip().lower()
+    return None
+
+
+def check_ssh_root():
+    v = sshd_setting("permitrootlogin")
+    if v is None:
+        return item("ssh_root", "SSH sign-in as root", "warn", "Could not read the SSH server settings (is it installed?).")
+    if v == "yes":
+        return item("ssh_root", "SSH sign-in as root", "fail", "Root can sign in over SSH with a password. Set PermitRootLogin to no or prohibit-password in /etc/ssh/sshd_config.")
+    if v == "no":
+        return item("ssh_root", "SSH sign-in as root", "ok", "Root cannot sign in over SSH.")
+    return item("ssh_root", "SSH sign-in as root", "ok", "Root can sign in over SSH only with a key (" + CTRL.sub("", v)[:30] + ").")
+
+
+def check_ssh_password():
+    v = sshd_setting("passwordauthentication")
+    if v is None:
+        return item("ssh_password", "SSH password sign-in", "warn", "Could not read the SSH server settings.")
+    if v == "yes":
+        return item("ssh_password", "SSH password sign-in", "warn", "Passwords are accepted over SSH, so anyone on the internet can try to guess one. Keys are safer: set PasswordAuthentication to no once your key works.")
+    return item("ssh_password", "SSH password sign-in", "ok", "SSH accepts keys only.")
+
+
+def check_firewall():
+    r = run(UFW, "status")
+    if not r or r.returncode != 0:
+        return item("firewall", "Firewall", "warn", "Could not read the firewall (is ufw installed?).", "/firewall.html")
+    if re.search(r"^Status:\s*active", r.stdout, re.M):
+        return item("firewall", "Firewall", "ok", "The firewall is on.", "/firewall.html")
+    return item("firewall", "Firewall", "fail", "The firewall is off. Allow SSH and the panel port first, then enable it.", "/firewall.html")
+
+
+def check_autoupdates():
+    on = False
+    try:
+        on = bool(re.search(r'APT::Periodic::Unattended-Upgrade\s+"[1-9]', open(AUTOUPG).read(20000)))
+    except OSError:
+        pass
+    if not os.path.exists(UPG_PROGRAM):
+        return item("autoupdates", "Automatic security updates", "warn", "The package unattended-upgrades is not installed.", "/autoupdates.html")
+    if on:
+        return item("autoupdates", "Automatic security updates", "ok", "Security updates install by themselves.", "/autoupdates.html")
+    return item("autoupdates", "Automatic security updates", "warn", "Automatic security updates are off.", "/autoupdates.html")
+
+
+def check_reboot():
+    if os.path.exists(REBOOT_FLAG):
+        return item("reboot", "Restart needed", "warn", "Updates have been installed that only take effect after a restart.", "/")
+    return item("reboot", "Restart needed", "ok", "No restart is waiting.", "/")
+
+
+def check_fail2ban():
+    r = run(SYSTEMCTL, "is-active", "fail2ban")
+    if r and r.stdout.strip() == "active":
+        return item("fail2ban", "Blocking repeated failed sign-ins", "ok", "fail2ban is running.", "/blocked.html")
+    return item("fail2ban", "Blocking repeated failed sign-ins", "warn", "fail2ban is not running, so nothing blocks someone who keeps guessing passwords.", "/blocked.html")
+
+
+def check_empty_passwords():
+    try:
+        names = []
+        for line in open(SHADOW):
+            f = line.rstrip("\n").split(":")
+            if len(f) > 1 and f[1] == "":
+                names.append(CTRL.sub("", f[0])[:32])
+    except OSError:
+        return item("empty_pw", "Accounts without a password", "warn", "Could not read the password file.", "/users.html")
+    if names:
+        return item("empty_pw", "Accounts without a password", "fail", "These accounts have an empty password: " + ", ".join(names[:10]) + ".", "/users.html")
+    return item("empty_pw", "Accounts without a password", "ok", "Every account has a password or is locked.", "/users.html")
+
+
+def check_uid0():
+    extra = []
+    try:
+        for line in open(PASSWD):
+            f = line.split(":")
+            if len(f) > 3 and f[2] == "0" and f[0] != "root":
+                extra.append(CTRL.sub("", f[0])[:32])
+    except OSError:
+        return item("uid0", "Other accounts with root power", "warn", "Could not read the account list.", "/users.html")
+    if extra:
+        return item("uid0", "Other accounts with root power", "fail", "These accounts are as powerful as root: " + ", ".join(extra[:10]) + ".", "/users.html")
+    return item("uid0", "Other accounts with root power", "ok", "Only root has user id 0.", "/users.html")
+
+
+def check_time():
+    r = run(TIMEDATECTL, "show", "-p", "NTPSynchronized", "--value")
+    if r and r.stdout.strip() == "yes":
+        return item("time", "Clock in sync", "ok", "The clock is kept right by network time.", "/clock.html")
+    return item("time", "Clock in sync", "warn", "The clock is not synchronised. Wrong time breaks certificates and sign-in codes.", "/clock.html")
+
+
+CHECKS = (check_ssh_root, check_ssh_password, check_firewall, check_autoupdates, check_reboot, check_fail2ban,
+          check_empty_passwords, check_uid0, check_time)
+
+
+def cmd_run():
+    items = []
+    for fn in CHECKS:
+        try:
+            items.append(fn())
+        except Exception:
+            items.append(item(fn.__name__[6:], fn.__name__[6:].replace("_", " "), "warn", "This check could not run."))
+    print(json.dumps({"items": items}))
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["run"]:
+        return cmd_run()
+    if a == ["check"]:
+        return print(json.dumps({"ok": True}))
+    die("usage: run | check")
+
+
+main()

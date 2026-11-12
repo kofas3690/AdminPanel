@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security check</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; min-width: 110px; }
+  .card b { display: block; font-size: 20px; }
+  .row { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin: 8px 0; display: flex; gap: 12px; align-items: flex-start; }
+  .badge { flex: none; min-width: 48px; text-align: center; border-radius: 999px; padding: 1px 10px; font-size: 12px; font-weight: 600; color: #fff; }
+  .b-ok { background: var(--ok, #2e9e5b); } .b-warn { background: var(--warn, #c98a00); } .b-fail { background: var(--crit, #e5534b); }
+  .row h3 { margin: 0 0 2px; font-size: 15px; }
+</style>
+<p class="subtabs"><a href="/users.html">Users</a><a href="/logins.html">Login history</a><a href="/groups.html">Groups</a><a href="/sudo.html">Sudo activity</a><a href="/seccheck.html" class="on">Security check</a></p>
+<h1>Security check</h1>
+<p class="muted">A short list of common safety checks. Nothing here changes the machine; each line says what is wrong and where to fix it.
+A warning is advice, a failure is something you should fix soon. Passing every check does not make a machine safe, but failing one is worth a look.</p>
+<p id="err" class="crit"></p>
+<p><button id="again">Check again</button></p>
+<div class="cards" id="cards"></div>
+<div id="list"></div>
+<script src="/page/seccheck.js"></script>
