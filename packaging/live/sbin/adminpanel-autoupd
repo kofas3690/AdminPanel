@@ -1,0 +1,100 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Automatic updates page: report whether automatic security updates are on, switch them on or
+off, and show the end of the last run's log.
+
+It writes exactly one file, /etc/apt/apt.conf.d/20auto-upgrades, with fixed content. Nothing from the caller is put
+into that file: the only inputs are the words "on" and "off"."""
+import json, os, re, subprocess, sys, tempfile
+
+CONF = "/etc/apt/apt.conf.d/20auto-upgrades"
+PROGRAM = "/usr/bin/unattended-upgrade"
+LOG = "/var/log/unattended-upgrades/unattended-upgrades.log"
+SYSTEMCTL = "/usr/bin/systemctl"
+ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
+CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+KEY = re.compile(r'APT::Periodic::(Update-Package-Lists|Unattended-Upgrade)\s+"(\d{1,3})"\s*;')
+TAIL_LINES = 25
+TAIL_BYTES = 40_000
+
+TEMPLATE = 'APT::Periodic::Update-Package-Lists "%d";\nAPT::Periodic::Unattended-Upgrade "%d";\n'
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def read_conf():
+    vals = {}
+    try:
+        with open(CONF) as f:
+            for k, v in KEY.findall(f.read(20000)):
+                vals[k] = int(v)
+    except OSError:
+        pass
+    return vals
+
+
+def timer_state(name):
+    try:
+        r = subprocess.run([SYSTEMCTL, "is-enabled", name], capture_output=True, text=True, env=ENV,
+                           stdin=subprocess.DEVNULL, timeout=10)
+        return CTRL.sub("", r.stdout.strip())[:20] or "unknown"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+
+
+def tail(path):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - TAIL_BYTES))
+            data = f.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    return CTRL.sub("", "\n".join(data.splitlines()[-TAIL_LINES:]))
+
+
+def cmd_status():
+    v = read_conf()
+    on = v.get("Unattended-Upgrade", 0) > 0
+    print(json.dumps({"installed": os.path.exists(PROGRAM), "enabled": on,
+                      "lists": v.get("Update-Package-Lists", 0) > 0,
+                      "timer": timer_state("apt-daily-upgrade.timer"), "log": tail(LOG)}))
+
+
+def cmd_set(word):
+    if word not in ("on", "off"):
+        die("unsupported value")
+    if not os.path.exists(PROGRAM):
+        die("The package unattended-upgrades is not installed", 1)
+    n = 1 if word == "on" else 0
+    d = os.path.dirname(CONF)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".20auto-upgrades.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(TEMPLATE % (n, n))
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, CONF)
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        die("Could not write the setting: " + CTRL.sub("", str(e))[:150], 1)
+    print("ok")
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["status"]:
+        return cmd_status()
+    if a == ["check"]:
+        return print(json.dumps({"ok": True}))
+    if len(a) == 2 and a[0] == "set":
+        return cmd_set(a[1])
+    die("usage: status | set on | set off | check")
+
+
+main()

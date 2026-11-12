@@ -6,7 +6,7 @@
                 ["Date & time", "/clock.html", "clock timezone time zone ntp hostname name date chrony"], ["Networking", "/network.html", "vpn proxy wireguard interfaces dns"], ["Firewall", "/firewall.html", "ufw fail2ban banned blocked ip addresses unban brute force jail listening open ports netstat ss exposed"], ["Certificates", "/certs.html", "tls ssl https expiry expire lets encrypt letsencrypt nginx renew"], ["Accounts", "/users.html", "sudo sudoers privilege login history sign-in failed attempts ssh brute force users groups members"],
                 ["Logs", "/logs.html", "journal journalctl errors messages syslog"],
                 ["Alerts", "/alerts.html", "warnings disk full memory failed services problems notifications"]]],
-    ["Tools", [["Software updates", "/updates.html"], ["File manager", "/files.html"],
+    ["Tools", [["Software updates", "/updates.html", "apt upgrade packages automatic updates unattended upgrades security patches"], ["File manager", "/files.html"],
                ["Terminal", "/terminal.html"]]],
   ];
 
@@ -32,7 +32,7 @@
     return e;
   };
   // VPN and Proxy are tabs under Networking, so that sidebar entry stays highlighted on their pages.
-  const SUBPAGES = { "/vpn.html": "/network.html", "/proxy.html": "/network.html", "/remote.html": "/fleet.html", "/logins.html": "/users.html", "/groups.html": "/users.html", "/cron.html": "/units.html", "/kernel.html": "/hardware.html", "/sudo.html": "/users.html", "/packages.html": "/updates.html", "/usage.html": "/storage.html", "/shares.html": "/storage.html", "/containers.html": "/units.html", "/startup.html": "/units.html", "/blocked.html": "/firewall.html", "/listening.html": "/firewall.html" };
+  const SUBPAGES = { "/vpn.html": "/network.html", "/proxy.html": "/network.html", "/remote.html": "/fleet.html", "/logins.html": "/users.html", "/groups.html": "/users.html", "/cron.html": "/units.html", "/kernel.html": "/hardware.html", "/sudo.html": "/users.html", "/packages.html": "/updates.html", "/autoupdates.html": "/updates.html", "/usage.html": "/storage.html", "/shares.html": "/storage.html", "/containers.html": "/units.html", "/startup.html": "/units.html", "/blocked.html": "/firewall.html", "/listening.html": "/firewall.html" };
   const isHere = (href) =>
     location.pathname === href || SUBPAGES[location.pathname] === href || (href === "/" && location.pathname === "/index.html");
 

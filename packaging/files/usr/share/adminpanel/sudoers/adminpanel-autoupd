@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-autoupd status, /usr/local/sbin/adminpanel-autoupd set on, /usr/local/sbin/adminpanel-autoupd set off, /usr/local/sbin/adminpanel-autoupd check

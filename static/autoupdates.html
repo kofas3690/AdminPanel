@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Automatic updates</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .state { font-size: 20px; font-weight: 600; }
+  .ok { color: var(--ok); } .bad { color: var(--crit, #e5534b); }
+  #logbox { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; max-height: 360px; overflow: auto;
+            white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+</style>
+<p class="subtabs"><a href="/updates.html">Updates</a><a href="/packages.html">Packages</a><a href="/autoupdates.html" class="on">Automatic updates</a></p>
+<h1>Automatic updates</h1>
+<p class="muted">When this is on, the machine installs security updates by itself every day, so a known hole does not stay open
+while nobody is looking. It does not restart the machine; the Overview page tells you when a restart is needed.</p>
+<p id="err" class="crit"></p>
+<p id="banner" class="muted"></p>
+<p class="state" id="state"></p>
+<p><button id="toggle" hidden></button></p>
+<p class="muted" id="detail"></p>
+<h2 id="loghead" hidden>Last run</h2>
+<pre id="logbox" hidden></pre>
+<script src="/page/autoupdates.js"></script>
