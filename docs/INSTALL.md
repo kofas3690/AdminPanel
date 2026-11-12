@@ -1,6 +1,6 @@
 # AdminPanel: installation and setup guide
 
-This guide takes you from a fresh Ubuntu or Debian machine to a working, signed-in panel. Version 4.3.0.
+This guide takes you from a fresh Ubuntu or Debian machine to a working, signed-in panel. Version 4.4.0.
 
 - [ Requirements](#1-requirements)
 - [ Install the package](#2-install-the-package)
@@ -34,15 +34,15 @@ Recommended (installed with the package unless you disable recommends): `openssh
 
 ## 2. Install the package
 
-1. Download `adminpanel_4.3.0_all.deb` from the [Releases](https://github.com/kofas3690/AdminPanel/releases) page, or build it yourself (see the README).
+1. Download `adminpanel_4.4.0_all.deb` from the [Releases](https://github.com/kofas3690/AdminPanel/releases) page, or build it yourself (see the README).
 2. Install it. Using `apt` (not `dpkg -i`) resolves dependencies:
 
 ```bash
 sudo apt update
-sudo apt install ./adminpanel_4.3.0_all.deb
+sudo apt install ./adminpanel_4.4.0_all.deb
 ```
 
-On a remote server, copy the file first: `scp adminpanel_4.3.0_all.deb YOURUSER@SERVER:/tmp/`, then install from `/tmp`.
+On a remote server, copy the file first: `scp adminpanel_4.4.0_all.deb YOURUSER@SERVER:/tmp/`, then install from `/tmp`.
 
 The installer creates the `adminpanel` service account, a Python environment in `/opt/adminpanel/.venv`, the sudo rules and root helpers, and starts `adminpanel.service`. It ends with:
 
