@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Listening ports</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  .ok { color: var(--ok); } .warn { color: var(--warn, #c98a00); }
+</style>
+<p class="subtabs"><a href="/firewall.html">Firewall</a><a href="/blocked.html">Blocked addresses</a><a href="/listening.html" class="on">Listening ports</a></p>
+<h1>Listening ports</h1>
+<p class="muted">The programs that are waiting for connections on this machine. <b>Network</b> means other computers can reach the
+port if the firewall lets them in; <b>This machine only</b> means only programs on this machine can. Nothing here can be changed:
+to close a port, stop its service on the Services page or add a firewall rule.</p>
+<p id="err" class="crit"></p>
+<p id="banner" class="muted"></p>
+<p><label><input type="checkbox" id="onlynet"> Show only ports reachable from the network</label></p>
+<div class="tbl-wrap"><table>
+  <thead><tr><th>Port</th><th>Type</th><th>Reachable from</th><th>Address</th><th>Program</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table></div>
+<script src="/page/listening.js"></script>

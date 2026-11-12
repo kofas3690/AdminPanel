@@ -1,0 +1,66 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Listening ports page: list the TCP and UDP sockets that are waiting for connections, and the
+program that owns each one. Read only: it takes no address, port or program name from anyone and changes nothing."""
+import json, re, subprocess, sys
+
+SS = "/usr/bin/ss"
+ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
+CTRL = re.compile(r"[\x00-\x1f\x7f]")
+PROC = re.compile(r'\("([^"]{1,64})",pid=(\d+)')
+MAX = 1000
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def split_addr(s):
+    host, _, port = s.rpartition(":")
+    host = host.strip("[]")
+    if "%" in host:
+        host = host.split("%", 1)[0]
+    return host, port
+
+
+def cmd_list():
+    try:
+        r = subprocess.run([SS, "-H", "-tulnp"], capture_output=True, text=True, errors="replace", env=ENV,
+                           stdin=subprocess.DEVNULL, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        die("could not run ss", 1)
+    if r.returncode != 0:
+        die(CTRL.sub("", (r.stderr or "ss failed").strip())[:200], 1)
+    out, seen = [], set()
+    for line in r.stdout.splitlines():
+        f = line.split(None, 6)
+        if len(f) < 5 or f[0] not in ("tcp", "udp"):
+            continue
+        host, port = split_addr(f[4])
+        if not port.isdigit() or not (0 <= int(port) <= 65535):
+            continue
+        procs = []
+        for name, pid in PROC.findall(f[6] if len(f) > 6 else ""):
+            if name not in [p["name"] for p in procs]:
+                procs.append({"name": CTRL.sub("", name), "pid": int(pid)})
+        key = (f[0], host, port)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"proto": f[0], "address": CTRL.sub("", host)[:60], "port": int(port), "programs": procs[:5]})
+        if len(out) >= MAX:
+            break
+    out.sort(key=lambda x: (x["port"], x["proto"], x["address"]))
+    print(json.dumps({"sockets": out}))
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["list"]:
+        return cmd_list()
+    if a == ["check"]:
+        return print(json.dumps({"ok": True}))
+    die("usage: list | check")
+
+
+main()
