@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swap</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; min-width: 110px; }
+  .card b { display: block; font-size: 20px; }
+  .bad { color: var(--crit, #e5534b); } .warn { color: var(--warn, #c98a00); }
+  form.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+</style>
+<p class="subtabs"><a href="/storage.html">Storage</a><a href="/usage.html">Disk usage</a><a href="/shares.html">Network shares</a><a href="/swap.html" class="on">Swap</a></p>
+<h1>Swap</h1>
+<p class="muted">Swap is space on the disk that the machine uses when it runs out of memory (RAM). Without it, a machine that runs out of memory
+starts killing programs. Small cloud machines often have none. The swap file is always <code>/swapfile</code>.</p>
+<p id="err" class="crit"></p>
+<p id="msg" class="muted"></p>
+<div class="cards" id="cards"></div>
+<p id="warn" class="warn"></p>
+<h2>Active swap</h2>
+<div class="tbl-wrap"><table>
+  <thead><tr><th>Where</th><th>Type</th><th>Size</th><th>Used</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table></div>
+<h2 id="createhead">Create a swap file</h2>
+<form id="createform" class="row">
+  <label>Size in MB <input id="size" type="number" min="128" max="65536" step="128" required></label>
+  <button id="createbtn" class="primary">Create and turn on</button>
+  <span class="muted" id="createhint"></span>
+</form>
+<p><button id="remove" hidden>Remove the swap file</button></p>
+<h2>Swappiness</h2>
+<p class="muted">How eagerly the machine moves memory to swap, from 0 (avoid it) to 100 (use it freely). The default is 60. Servers often use 10.</p>
+<form id="swform" class="row">
+  <input id="sw" type="number" min="0" max="100" required>
+  <button>Set</button>
+</form>
+<script src="/page/swap.js"></script>

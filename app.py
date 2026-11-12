@@ -42,6 +42,7 @@ from blocked import router as blocked_router
 from listening import router as listening_router
 from startup import router as startup_router
 from autoupdates import router as autoupdates_router
+from swap import router as swap_router
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -93,6 +94,7 @@ app.include_router(blocked_router)
 app.include_router(listening_router)
 app.include_router(startup_router)
 app.include_router(autoupdates_router)
+app.include_router(swap_router)
 
 app.include_router(fleet_router)
 app.include_router(health_router)

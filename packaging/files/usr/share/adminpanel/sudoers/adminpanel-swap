@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-swap status, /usr/local/sbin/adminpanel-swap create *, /usr/local/sbin/adminpanel-swap remove, /usr/local/sbin/adminpanel-swap swappiness *, /usr/local/sbin/adminpanel-swap check
