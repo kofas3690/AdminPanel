@@ -40,6 +40,7 @@ from shares import router as shares_router
 from containers import router as containers_router
 from blocked import router as blocked_router
 from listening import router as listening_router
+from startup import router as startup_router
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -89,6 +90,7 @@ app.include_router(shares_router)
 app.include_router(containers_router)
 app.include_router(blocked_router)
 app.include_router(listening_router)
+app.include_router(startup_router)
 
 app.include_router(fleet_router)
 app.include_router(health_router)

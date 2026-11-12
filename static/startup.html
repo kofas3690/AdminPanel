@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Startup</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; min-width: 110px; }
+  .card b { display: block; font-size: 20px; }
+  .bar { height: 8px; border-radius: 4px; background: var(--accent, #3b82f6); min-width: 2px; }
+  td.barcell { width: 40%; }
+  .bad { color: var(--crit, #e5534b); }
+</style>
+<p class="subtabs"><a href="/units.html">Services</a><a href="/cron.html">Cron jobs</a><a href="/containers.html">Containers</a><a href="/startup.html" class="on">Startup</a></p>
+<h1>Startup</h1>
+<p class="muted">How long the last boot took and which services were slowest to start. A slow service is not always a problem: some wait
+for the network on purpose. Failed services are listed below. This page only reads; start, stop and restart are on the Services tab.</p>
+<p id="err" class="crit"></p>
+<p id="banner" class="muted"></p>
+<div class="cards" id="cards"></div>
+<h2>Failed services</h2>
+<p id="nofail" class="muted" hidden>No services have failed.</p>
+<div class="tbl-wrap"><table id="failtbl" hidden>
+  <thead><tr><th>Service</th><th>State</th><th>Description</th></tr></thead>
+  <tbody id="fail"></tbody>
+</table></div>
+<h2>Slowest to start</h2>
+<div class="tbl-wrap"><table>
+  <thead><tr><th>Service</th><th>Time</th><th></th></tr></thead>
+  <tbody id="rows"></tbody>
+</table></div>
+<script src="/page/startup.js"></script>
