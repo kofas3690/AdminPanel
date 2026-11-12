@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-logclean status, /usr/local/sbin/adminpanel-logclean vacuum-size *, /usr/local/sbin/adminpanel-logclean vacuum-time *, /usr/local/sbin/adminpanel-logclean check

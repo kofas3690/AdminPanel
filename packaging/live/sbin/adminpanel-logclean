@@ -1,0 +1,102 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Log cleanup page: report how much disk the journal and /var/log use, and trim the journal.
+
+Trimming is journalctl's own --vacuum-size / --vacuum-time with a number the caller picks within fixed limits. It never
+deletes a plain log file. Reporting only reads file names, sizes and times, never file contents."""
+import json, os, re, shutil, subprocess, sys
+
+JOURNAL_DIRS = ("/var/log/journal", "/run/log/journal")
+LOG_DIR = "/var/log"
+JOURNALCTL = "/usr/bin/journalctl"
+ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
+CTRL = re.compile(r"[\x00-\x1f\x7f]")
+MIN_MB, MAX_MB = 50, 102400
+MIN_DAYS, MAX_DAYS = 1, 3650
+TOP = 15
+MAX_VISIT = 300000
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def walk_size(top, skip=()):
+    total, files, seen = 0, [], 0
+    for root, dirs, names in os.walk(top, followlinks=False):
+        if root in skip:
+            dirs[:] = []
+            continue
+        dirs[:] = [d for d in dirs if os.path.join(root, d) not in skip]
+        for n in names:
+            seen += 1
+            if seen > MAX_VISIT:
+                return total, files, True
+            p = os.path.join(root, n)
+            try:
+                st = os.lstat(p)
+            except OSError:
+                continue
+            if not os.path.isfile(p) or os.path.islink(p):
+                continue
+            total += st.st_blocks * 512
+            files.append((st.st_blocks * 512, p, int(st.st_mtime)))
+    return total, files, False
+
+
+def cmd_status():
+    jtotal = 0
+    for d in JOURNAL_DIRS:
+        if os.path.isdir(d):
+            jtotal += walk_size(d)[0]
+    total, files, cut = walk_size(LOG_DIR, skip=JOURNAL_DIRS)
+    files.sort(reverse=True)
+    top = [{"path": CTRL.sub("", p)[:200], "bytes": b, "modified": m} for b, p, m in files[:TOP]]
+    try:
+        du = shutil.disk_usage(LOG_DIR)
+        free, size = du.free, du.total
+    except OSError:
+        free, size = 0, 0
+    print(json.dumps({"journal_bytes": jtotal, "logs_bytes": total, "top": top, "truncated": cut,
+                      "disk_free": free, "disk_total": size, "min_mb": MIN_MB, "max_mb": MAX_MB,
+                      "min_days": MIN_DAYS, "max_days": MAX_DAYS}))
+
+
+def vacuum(flag):
+    try:
+        r = subprocess.run([JOURNALCTL, flag], capture_output=True, text=True, errors="replace", env=ENV,
+                           stdin=subprocess.DEVNULL, timeout=300)
+    except subprocess.TimeoutExpired:
+        die("journalctl took too long", 1)
+    except OSError as e:
+        die("Could not run journalctl: " + CTRL.sub("", str(e))[:100], 1)
+    if r.returncode != 0:
+        e = (r.stderr or r.stdout or "failed").strip().splitlines()
+        die(CTRL.sub("", e[-1] if e else "failed")[:200], 1)
+    lines = [CTRL.sub("", l) for l in (r.stdout + r.stderr).splitlines() if "freed" in l]
+    print(json.dumps({"result": (lines[-1] if lines else "Done.")[:200]}))
+
+
+def num(arg, lo, hi, what):
+    if not re.fullmatch(r"[0-9]{1,6}", arg or ""):
+        die("invalid " + what)
+    n = int(arg)
+    if not lo <= n <= hi:
+        die("%s must be between %d and %d" % (what, lo, hi))
+    return n
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["status"]:
+        return cmd_status()
+    if a == ["check"]:
+        return print(json.dumps({"ok": True}))
+    if len(a) == 2 and a[0] == "vacuum-size":
+        return vacuum("--vacuum-size=%dM" % num(a[1], MIN_MB, MAX_MB, "size in MB"))
+    if len(a) == 2 and a[0] == "vacuum-time":
+        return vacuum("--vacuum-time=%dd" % num(a[1], MIN_DAYS, MAX_DAYS, "number of days"))
+    die("usage: status | vacuum-size MB | vacuum-time DAYS | check")
+
+
+main()

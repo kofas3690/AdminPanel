@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log cleanup</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; min-width: 110px; }
+  .card b { display: block; font-size: 20px; }
+  form.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  td.p { overflow-wrap: anywhere; font-family: monospace; font-size: 12px; }
+</style>
+<p class="subtabs"><a href="/logs.html">Journal</a><a href="/logclean.html" class="on">Log cleanup</a></p>
+<h1>Log cleanup</h1>
+<p class="muted">Logs grow until the disk is full. The system journal can be trimmed here, which is safe: it only removes the oldest entries.
+Plain log files under <code>/var/log</code> are listed so you can see what is big, but are never deleted from this page;
+most of them are rotated by the system on its own schedule.</p>
+<p id="err" class="crit"></p>
+<p id="msg" class="muted"></p>
+<div class="cards" id="cards"></div>
+<h2>Trim the journal</h2>
+<form class="row" id="sizeform"><label>Keep at most
+  <select id="size"><option value="100">100 MB</option><option value="500" selected>500 MB</option><option value="1024">1 GB</option><option value="2048">2 GB</option></select></label>
+  <button>Trim by size</button></form>
+<form class="row" id="timeform"><label>Keep only the last
+  <select id="days"><option value="7">7 days</option><option value="14">14 days</option><option value="30" selected>30 days</option><option value="90">90 days</option></select></label>
+  <button>Trim by age</button></form>
+<h2>Biggest files in /var/log</h2>
+<div class="tbl-wrap"><table>
+  <thead><tr><th>File</th><th>Size</th><th>Last changed</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table></div>
+<p class="muted" id="cut"></p>
+<script src="/page/logclean.js"></script>
