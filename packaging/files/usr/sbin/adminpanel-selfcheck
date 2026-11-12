@@ -29,7 +29,7 @@ if out=$(runuser -u adminpanel -- /bin/sh -c "cd $APP && timeout 60 $PY -c 'impo
 else bad "the application does not load: $(printf '%s' "$out" | tail -n 1)"; fi
 
 # ---- sudo rules and root helpers ----
-for n in adminpanel adminpanel-apt adminpanel-ufw adminpanel-users adminpanel-net adminpanel-disk adminpanel-userunits adminpanel-units adminpanel-backup adminpanel-proc adminpanel-smart adminpanel-cron adminpanel-time adminpanel-certs adminpanel-du adminpanel-share adminpanel-docker; do
+for n in adminpanel adminpanel-apt adminpanel-ufw adminpanel-users adminpanel-net adminpanel-disk adminpanel-userunits adminpanel-units adminpanel-backup adminpanel-proc adminpanel-smart adminpanel-cron adminpanel-time adminpanel-certs adminpanel-du adminpanel-share adminpanel-docker adminpanel-f2b; do
     [ -f "/etc/sudoers.d/$n" ] || bad "missing sudo rule /etc/sudoers.d/$n"
 done
 if visudo -c >/dev/null 2>&1; then ok "the sudo configuration is valid"; else bad "the sudo configuration is invalid"; fi
@@ -37,7 +37,7 @@ if visudo -c >/dev/null 2>&1; then ok "the sudo configuration is valid"; else ba
 if sudo -u adminpanel sudo -n /usr/bin/id >/dev/null 2>&1; then bad "the panel account can run arbitrary commands as root!"
 else ok "the panel account cannot run arbitrary commands as root"; fi
 
-for h in apt ufw users net disk userunits units backup proc smart cron time certs du share docker; do
+for h in apt ufw users net disk userunits units backup proc smart cron time certs du share docker f2b; do
     p="/usr/local/sbin/adminpanel-$h"
     if [ -x "$p" ] && [ "$(stat -c '%U:%a' "$p")" = "root:755" ]; then :; else bad "$p is missing or has wrong ownership or permissions"; fi
 done
@@ -62,6 +62,7 @@ smoke "certificate helper" /usr/local/sbin/adminpanel-certs check
 smoke "disk usage helper" /usr/local/sbin/adminpanel-du check
 smoke "network shares helper" /usr/local/sbin/adminpanel-share check
 smoke "containers helper" /usr/local/sbin/adminpanel-docker check
+smoke "blocked addresses helper" /usr/local/sbin/adminpanel-f2b check
 if [ -x /usr/bin/systemd-run ]; then ok "systemd-run is available (software updates survive a panel restart)"
 else bad "systemd-run is missing: software updates cannot run safely"; fi
 if out=$(sudo -u adminpanel sudo -n /usr/local/sbin/adminpanel-users list 2>&1) && printf '%s' "$out" | "$PY" -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then ok "accounts helper answers"

@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-f2b list, /usr/local/sbin/adminpanel-f2b unban *, /usr/local/sbin/adminpanel-f2b check
