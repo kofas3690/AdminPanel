@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-certbot status, /usr/local/sbin/adminpanel-certbot test, /usr/local/sbin/adminpanel-certbot renew, /usr/local/sbin/adminpanel-certbot check

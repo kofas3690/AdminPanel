@@ -14,9 +14,10 @@
   .small { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
   .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
 </style>
+<p class="subtabs"><a href="/certs.html" class="on">Certificates</a><a href="/renewal.html">Renewal</a></p>
 <h1>Certificates</h1>
 <p class="muted">The TLS certificates this machine serves: the panel's own, Let's Encrypt, and the ones nginx points to.
-Read only: no private key is ever read, and nothing here renews or changes a certificate. An expiring certificate also
+Read only: no private key is ever read, and nothing on this tab renews or changes a certificate (renewal is on the Renewal tab). An expiring certificate also
 appears on the Alerts page.</p>
 <p id="err" class="crit"></p>
 <div class="toolbar"><button id="again">Check again</button><span id="when" class="muted"></span></div>

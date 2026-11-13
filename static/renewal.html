@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Certificate renewal</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  td.m { overflow-wrap: anywhere; font-family: monospace; font-size: 12px; }
+  #out { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
+  .bad { color: var(--crit, #e5534b); } .good { color: var(--ok); } .warn { color: var(--warn, #c98a00); }
+</style>
+<p class="subtabs"><a href="/certs.html">Certificates</a><a href="/renewal.html" class="on">Renewal</a></p>
+<h1>Certificate renewal</h1>
+<p class="muted">Let's Encrypt certificates last 90 days and are renewed by <b>certbot</b>, normally by itself every day. This page shows the
+ones certbot manages, tests that renewal works (a dry run that changes nothing), and renews on demand. <b>Renew now</b> only renews certificates that are
+within 30 days of expiry, so pressing it early does no harm. After a renewal, reload nginx on the Websites page so it picks up the new files.</p>
+<p id="err" class="crit"></p>
+<p id="banner" class="muted"></p>
+<p><button id="test">Test renewal (dry run)</button> <button id="renew">Renew now</button></p>
+<pre id="out" hidden></pre>
+<div class="tbl-wrap"><table>
+  <thead><tr><th>Certificate</th><th>Names</th><th>Expires</th><th>State</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table></div>
+<script src="/page/renewal.js"></script>

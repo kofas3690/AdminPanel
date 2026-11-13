@@ -1,0 +1,100 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Certificate renewal page: list the Let's Encrypt certificates certbot manages, test renewal with a
+dry run, and renew the ones that are due.
+
+It takes no domain, path or option from anyone: the only commands are status, test, renew and check, and the certbot command
+lines are fixed. `renew` only renews certificates that are close to expiry, which is certbot's own rule."""
+import json, os, re, subprocess, sys
+
+CERTBOT = "/usr/bin/certbot"
+SYSTEMCTL = "/usr/bin/systemctl"
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+TAIL = 40
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def clean(s, n=300):
+    return CTRL.sub("", s).strip()[:n]
+
+
+def run(*args, timeout=30):
+    try:
+        return subprocess.run(list(args), capture_output=True, text=True, errors="replace", env=ENV,
+                              stdin=subprocess.DEVNULL, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        die("certbot did not finish in time", 1)
+    except OSError as e:
+        die("Could not run certbot: " + clean(str(e), 100), 1)
+
+
+def parse_certs(text):
+    certs, cur = [], None
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("Certificate Name:"):
+            cur = {"name": clean(s.split(":", 1)[1], 100), "domains": [], "expiry": "", "state": "", "days": None}
+            certs.append(cur)
+        elif cur is not None and s.startswith("Domains:"):
+            cur["domains"] = [clean(d, 100) for d in s.split(":", 1)[1].split()][:20]
+        elif cur is not None and s.startswith("Expiry Date:"):
+            m = re.match(r"Expiry Date:\s*(\S+ \S+?)(?:\+\d\d:\d\d)?\s*\((\w+)(?::\s*(-?\d+) days?)?", s)
+            if m:
+                cur["expiry"] = clean(m.group(1), 40)
+                cur["state"] = clean(m.group(2), 20).lower()
+                cur["days"] = int(m.group(3)) if m.group(3) else None
+            else:
+                cur["expiry"] = clean(s.split(":", 1)[1], 60)
+    return certs[:100]
+
+
+def timer_state():
+    r = run(SYSTEMCTL, "is-active", "certbot.timer", timeout=10)
+    s = clean(r.stdout, 20)
+    if s != "active":
+        r2 = run(SYSTEMCTL, "is-enabled", "certbot.timer", timeout=10)
+        if clean(r2.stdout, 20) == "enabled":
+            return "enabled"
+    return s or "unknown"
+
+
+def cmd_status():
+    if not os.path.exists(CERTBOT):
+        print(json.dumps({"installed": False, "certs": [], "timer": "unknown"}))
+        return
+    r = run(CERTBOT, "certificates", timeout=60)
+    certs = parse_certs(r.stdout) if r.returncode == 0 else []
+    err = "" if r.returncode == 0 else clean((r.stderr or r.stdout).strip().splitlines()[-1] if (r.stderr or r.stdout).strip() else "certbot failed", 200)
+    print(json.dumps({"installed": True, "certs": certs, "timer": timer_state(), "error": err}))
+
+
+def tail(text):
+    return clean("\n".join(text.strip().splitlines()[-TAIL:]), 4000)
+
+
+def cmd_run(args):
+    if not os.path.exists(CERTBOT):
+        die("certbot is not installed", 1)
+    r = run(CERTBOT, *args, timeout=420)
+    out = tail(r.stdout + "\n" + r.stderr)
+    print(json.dumps({"ok": r.returncode == 0, "output": out}))
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["status"]:
+        return cmd_status()
+    if a == ["check"]:
+        return print(json.dumps({"ok": True}))
+    if a == ["test"]:
+        return cmd_run(["renew", "--dry-run", "--non-interactive"])
+    if a == ["renew"]:
+        return cmd_run(["renew", "--non-interactive"])
+    die("usage: status | test | renew | check")
+
+
+main()
