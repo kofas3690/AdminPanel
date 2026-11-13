@@ -1,0 +1,110 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Web logs page: list nginx's log files, show the end of one (with an optional plain-text filter),
+and summarise an access log (status codes, busiest addresses, most requested paths).
+
+The log file must be one the listing shows: a plain, non-link .log file directly inside /var/log/nginx. The filter arrives
+on standard input and is matched as plain text, never as a pattern or a command. Output is cleaned of control characters."""
+import collections, json, os, re, stat, sys
+
+LOG_DIR = "/var/log/nginx"
+NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
+CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+READ_BYTES = 4_000_000
+MIN_LINES, MAX_LINES = 10, 1000
+LINE_CUT = 600
+SUMMARY_LINES = 5000
+ACCESS = re.compile(r'^(\S+) \S+ \S+ \[[^\]]+\] "([^"]*)" (\d{3}) ')
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def files():
+    out = []
+    try:
+        names = sorted(os.listdir(LOG_DIR))
+    except OSError:
+        return out
+    for n in names:
+        if not NAME_RE.fullmatch(n) or not (n.endswith(".log") or re.search(r"\.log\.1$", n)):
+            continue
+        try:
+            st = os.lstat(os.path.join(LOG_DIR, n))
+        except OSError:
+            continue
+        if stat.S_ISREG(st.st_mode):
+            out.append({"name": n, "size": st.st_size, "modified": int(st.st_mtime)})
+    return out[:100]
+
+
+def read_tail(name):
+    if not NAME_RE.fullmatch(name or "") or name not in [f["name"] for f in files()]:
+        die("That log file is not available", 1)
+    fd = os.open(os.path.join(LOG_DIR, name), os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as f:
+        size = os.fstat(f.fileno()).st_size
+        f.seek(max(0, size - READ_BYTES))
+        data = f.read(READ_BYTES).decode("utf-8", "replace")
+    lines = data.splitlines()
+    if size > READ_BYTES and lines:
+        lines = lines[1:]
+    return lines
+
+
+def num(s, lo, hi):
+    if not re.fullmatch(r"[0-9]{1,5}", s or ""):
+        die("invalid number of lines")
+    n = int(s)
+    if not lo <= n <= hi:
+        die("The number of lines must be between %d and %d" % (lo, hi))
+    return n
+
+
+def cmd_list():
+    print(json.dumps({"dir_exists": os.path.isdir(LOG_DIR), "files": files()}))
+
+
+def cmd_tail(name, n):
+    n = num(n, MIN_LINES, MAX_LINES)
+    flt = CTRL.sub("", sys.stdin.read(300)).strip()[:200].lower()
+    lines = read_tail(name)
+    if flt:
+        lines = [l for l in lines if flt in l.lower()]
+    print(json.dumps({"name": name, "filter": flt, "lines": [CTRL.sub("", l)[:LINE_CUT] for l in lines[-n:]]}))
+
+
+def cmd_summary(name):
+    lines = read_tail(name)[-SUMMARY_LINES:]
+    status, ips, paths, bad = collections.Counter(), collections.Counter(), collections.Counter(), 0
+    for l in lines:
+        m = ACCESS.match(l)
+        if not m:
+            bad += 1
+            continue
+        ip, req, code = m.groups()
+        status[code[0] + "xx"] += 1
+        ips[CTRL.sub("", ip)[:60]] += 1
+        parts = req.split(" ")
+        if len(parts) >= 2:
+            paths[CTRL.sub("", parts[1].split("?", 1)[0])[:120]] += 1
+    total = sum(status.values())
+    print(json.dumps({"name": name, "lines": len(lines), "parsed": total, "unparsed": bad,
+                      "status": dict(sorted(status.items())), "top_ips": ips.most_common(10), "top_paths": paths.most_common(10)}))
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["list"]:
+        return cmd_list()
+    if a == ["check"]:
+        return print(json.dumps({"ok": True}))
+    if len(a) == 3 and a[0] == "tail":
+        return cmd_tail(a[1], a[2])
+    if len(a) == 2 and a[0] == "summary":
+        return cmd_summary(a[1])
+    die("usage: list | tail NAME LINES (filter on stdin) | summary NAME | check")
+
+
+main()

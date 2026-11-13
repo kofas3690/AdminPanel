@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Web logs</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  form.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  #lines { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 460px; overflow: auto; }
+  .cols { display: flex; flex-wrap: wrap; gap: 24px; }
+  .cols > div { min-width: 240px; flex: 1; }
+  td.m { overflow-wrap: anywhere; font-family: monospace; font-size: 12px; }
+</style>
+<p class="subtabs"><a href="/units.html">Services</a><a href="/cron.html">Cron jobs</a><a href="/containers.html">Containers</a><a href="/startup.html">Startup</a><a href="/websites.html">Websites</a><a href="/weblogs.html" class="on">Web logs</a></p>
+<h1>Web logs</h1>
+<p class="muted">The end of the nginx log files. The <b>access</b> log records every request and the <b>error</b> log records problems. Access logs
+contain visitors' addresses and the addresses they asked for, so treat what you see here as private. The summary uses the last 5000 requests.</p>
+<p id="err" class="crit"></p>
+<p id="banner" class="muted"></p>
+<form class="row" id="form">
+  <label>File <select id="file"></select></label>
+  <label>Lines <select id="n"><option>50</option><option selected>100</option><option>300</option><option>1000</option></select></label>
+  <label>Only lines containing <input id="filter" maxlength="200" placeholder="404, an address, a path..."></label>
+  <button class="primary">Show</button>
+  <button type="button" id="sum">Summarise</button>
+</form>
+<div id="summary" hidden>
+  <h2>Summary</h2>
+  <p class="muted" id="sumnote"></p>
+  <div class="cols">
+    <div><h3>Answers</h3><table><tbody id="status"></tbody></table></div>
+    <div><h3>Busiest addresses</h3><table><tbody id="ips"></tbody></table></div>
+    <div><h3>Most requested</h3><table><tbody id="paths"></tbody></table></div>
+  </div>
+</div>
+<h2>Lines</h2>
+<pre id="lines">Choose a file and press Show.</pre>
+<script src="/page/weblogs.js"></script>
