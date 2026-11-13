@@ -17,8 +17,8 @@ say() { echo "==> $*"; }
 [[ "$VERSION" =~ ^[0-9][A-Za-z0-9.+~-]*$ ]] || die "invalid version: $VERSION"
 command -v dpkg-deb >/dev/null || die "dpkg-deb is required. Build this on Ubuntu or Debian."
 
-MODULES=(paths power mailer alerts metrics hardware logins backup processes smart cron clock certs reboot kernel sudolog packages diskusage shares containers blocked listening startup autoupdates swap seccheck authkeys logclean websites certrenew weblogs app auth audit store system services logs updates firewall users terminal storage storage_admin fs network security journal units userunits create_user enroll_2fa sshkeys loginlock fleet actions bridge remote)
-HELPERS=(apt ufw users net disk userunits units backup proc smart cron time certs du share docker f2b ports autoupd swap audit sshkeys logclean nginx certbot weblogs)
+MODULES=(paths power mailer alerts metrics hardware logins backup processes smart cron clock certs reboot kernel sudolog packages diskusage shares containers blocked listening startup autoupdates swap seccheck authkeys logclean websites certrenew weblogs hosts app auth audit store system services logs updates firewall users terminal storage storage_admin fs network security journal units userunits create_user enroll_2fa sshkeys loginlock fleet actions bridge remote)
+HELPERS=(apt ufw users net disk userunits units backup proc smart cron time certs du share docker f2b ports autoupd swap audit sshkeys logclean nginx certbot weblogs hosts)
 
 say "Checking the source files"
 for m in "${MODULES[@]}"; do [ -f "$ROOT/$m.py" ] || die "missing $m.py in $ROOT"; done

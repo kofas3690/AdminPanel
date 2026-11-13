@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-hosts list, /usr/local/sbin/adminpanel-hosts add *, /usr/local/sbin/adminpanel-hosts remove *, /usr/local/sbin/adminpanel-hosts check

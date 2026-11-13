@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hosts file</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  form.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+  td.m { font-family: monospace; font-size: 12px; overflow-wrap: anywhere; }
+</style>
+<p class="subtabs"><a href="/network.html#config">Interfaces</a><a href="/vpn.html">VPN</a><a href="/proxy.html">Proxy</a><a href="/hosts.html" class="on">Hosts file</a></p>
+<h1>Hosts file</h1>
+<p class="muted">The machine checks <code>/etc/hosts</code> before it asks DNS, so an entry here decides where a name goes on this machine only.
+Use it to point a name at a test server, or to block a name by sending it to <code>0.0.0.0</code>. The panel adds and removes only its own
+entries; the system's lines are shown below and are never changed.</p>
+<p id="err" class="crit"></p>
+<p id="msg" class="muted"></p>
+<h2>Entries added here</h2>
+<div class="tbl-wrap"><table>
+  <thead><tr><th>Address</th><th>Name</th><th></th></tr></thead>
+  <tbody id="mine"></tbody>
+</table></div>
+<form id="form" class="row">
+  <label>Address <input id="addr" maxlength="45" placeholder="192.168.1.20" required></label>
+  <label>Name <input id="name" maxlength="253" placeholder="test.local" required></label>
+  <button class="primary">Add</button>
+</form>
+<h2>System lines</h2>
+<div class="tbl-wrap"><table>
+  <thead><tr><th>Address</th><th>Names</th></tr></thead>
+  <tbody id="sys"></tbody>
+</table></div>
+<script src="/page/hosts.js"></script>

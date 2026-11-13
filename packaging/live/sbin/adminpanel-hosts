@@ -1,0 +1,166 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Hosts file page: list /etc/hosts and add or remove the entries the panel itself manages.
+
+The panel only ever edits one marked block of /etc/hosts. Lines outside that block are shown but never changed. An
+address is checked with the ipaddress module and a name against a strict host-name pattern; nothing else is accepted."""
+import fcntl, ipaddress, json, os, re, socket, sys, tempfile
+
+HOSTS = "/etc/hosts"
+BACKUP = "/etc/hosts.adminpanel-backup"
+LOCK = "/run/adminpanel-hosts.lock"
+BEGIN = "# BEGIN adminpanel hosts (managed by AdminPanel, edit on the Hosts file page)"
+END = "# END adminpanel hosts"
+MAX_ENTRIES = 200
+MAX_SHOW = 500
+LABEL = r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
+NAME_RE = re.compile(r"^" + LABEL + r"(\." + LABEL + r")*$")
+RESERVED = {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback", "ip6-allnodes", "ip6-allrouters",
+            "ip6-localnet", "ip6-mcastprefix"}
+CTRL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def read():
+    try:
+        with open(HOSTS, encoding="utf-8", errors="replace") as f:
+            return f.read().splitlines()
+    except OSError as e:
+        die("Could not read " + HOSTS + ": " + CTRL.sub("", str(e))[:100], 1)
+
+
+def split(lines):
+    """Return (before, managed lines, after). Without a block, everything is 'before'."""
+    try:
+        b = lines.index(BEGIN)
+        e = lines.index(END, b + 1)
+    except ValueError:
+        return lines, [], []
+    return lines[:b], lines[b + 1:e], lines[e + 1:]
+
+
+def parse(line):
+    body = line.split("#", 1)[0].split()
+    if len(body) < 2:
+        return None
+    return {"address": CTRL.sub("", body[0])[:60], "names": [CTRL.sub("", n)[:120] for n in body[1:]][:20]}
+
+
+def entries(lines):
+    out = []
+    for l in lines:
+        p = parse(l)
+        if p:
+            out.append(p)
+    return out
+
+
+def cmd_list():
+    lines = read()
+    before, managed, after = split(lines)
+    system = entries(before + after)
+    print(json.dumps({"system": system[:MAX_SHOW], "managed": entries(managed)[:MAX_ENTRIES], "max_entries": MAX_ENTRIES}))
+
+
+def check_addr(a):
+    if len(a) > 45 or "%" in a:
+        die("Not a valid IP address")
+    try:
+        return str(ipaddress.ip_address(a))
+    except ValueError:
+        die("Not a valid IP address")
+
+
+def check_name(n):
+    n = n.lower()
+    if len(n) > 253 or not NAME_RE.fullmatch(n):
+        die("Not a valid host name (letters, digits, dots and hyphens)")
+    if n in RESERVED or n == socket.gethostname().lower():
+        die("That name is reserved by the system")
+    return n
+
+
+def write(before, managed, after):
+    out = list(before)
+    if managed:
+        while out and out[-1] == "":
+            out.pop()
+        out += ["", BEGIN] + managed + [END]
+    out += after
+    text = "\n".join(out).rstrip("\n") + "\n"
+    if not os.path.exists(BACKUP):
+        try:
+            with open(HOSTS, "rb") as s, open(BACKUP, "wb") as d:
+                d.write(s.read())
+            os.chmod(BACKUP, 0o644)
+        except OSError:
+            pass
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(HOSTS), prefix=".hosts.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, HOSTS)
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        die("Could not write " + HOSTS + ": " + CTRL.sub("", str(e))[:100], 1)
+
+
+def locked(fn):
+    try:
+        fd = os.open(LOCK, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError:
+        die("Could not take the lock", 1)
+    fn()
+
+
+def cmd_add(addr, name):
+    addr, name = check_addr(addr), check_name(name)
+    lines = read()
+    before, managed, after = split(lines)
+    if any(name in e["names"] for e in entries(before + after)):
+        die("That name is already defined elsewhere in the hosts file")
+    if any(name in e["names"] for e in entries(managed)):
+        die("That name is already in the list: remove it first to change its address")
+    if len(entries(managed)) >= MAX_ENTRIES:
+        die("Too many entries (limit " + str(MAX_ENTRIES) + ")")
+    write(before, managed + [addr + " " + name], after)
+    print(json.dumps({"ok": True}))
+
+
+def cmd_remove(addr, name):
+    addr, name = check_addr(addr), check_name(name)
+    lines = read()
+    before, managed, after = split(lines)
+    keep = [l for l in managed if not (parse(l) and parse(l)["address"] == addr and parse(l)["names"] == [name])]
+    if len(keep) == len(managed):
+        die("That entry is not in the managed list")
+    write(before, keep, after)
+    print(json.dumps({"ok": True}))
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["list"]:
+        cmd_list()
+    elif a == ["check"]:
+        read()
+        print(json.dumps({"ok": True}))
+    elif len(a) == 3 and a[0] == "add":
+        locked(lambda: cmd_add(a[1], a[2]))
+    elif len(a) == 3 and a[0] == "remove":
+        locked(lambda: cmd_remove(a[1], a[2]))
+    else:
+        die("usage: list | add ADDRESS NAME | remove ADDRESS NAME | check")
+
+
+main()
