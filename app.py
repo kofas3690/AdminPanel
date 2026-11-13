@@ -46,6 +46,7 @@ from swap import router as swap_router
 from seccheck import router as seccheck_router
 from authkeys import router as authkeys_router
 from logclean import router as logclean_router
+from websites import router as websites_router
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -101,6 +102,7 @@ app.include_router(swap_router)
 app.include_router(seccheck_router)
 app.include_router(authkeys_router)
 app.include_router(logclean_router)
+app.include_router(websites_router)
 
 app.include_router(fleet_router)
 app.include_router(health_router)

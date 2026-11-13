@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Websites</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/theme.js"></script>
+<script src="/shell.js" defer></script>
+<style>
+  .tbl-wrap { overflow-x: auto; }
+  td.m { overflow-wrap: anywhere; font-family: monospace; font-size: 12px; }
+  .tag { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; font-size: 12px; margin-right: 4px; }
+  #testout { background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .bad { color: var(--crit, #e5534b); } .good { color: var(--ok); }
+</style>
+<p class="subtabs"><a href="/units.html">Services</a><a href="/cron.html">Cron jobs</a><a href="/containers.html">Containers</a><a href="/startup.html">Startup</a><a href="/websites.html" class="on">Websites</a></p>
+<h1>Websites</h1>
+<p class="muted">The sites the nginx web server is set up to serve, read from its configuration files. This page does not edit them: change a
+file with the Terminal or File manager, then use <b>Test</b> and <b>Reload</b> here. A reload is refused if the test fails, so a mistake cannot take the web server (and this panel) down.</p>
+<p id="err" class="crit"></p>
+<p id="banner" class="muted"></p>
+<p><button id="test">Test configuration</button> <button id="reload">Reload nginx</button></p>
+<pre id="testout" hidden></pre>
+<div class="tbl-wrap"><table>
+  <thead><tr><th>Names</th><th>Listens on</th><th>Serves</th><th>File</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table></div>
+<script src="/page/websites.js"></script>

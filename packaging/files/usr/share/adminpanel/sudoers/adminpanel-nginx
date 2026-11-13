@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-nginx list, /usr/local/sbin/adminpanel-nginx test, /usr/local/sbin/adminpanel-nginx reload, /usr/local/sbin/adminpanel-nginx check

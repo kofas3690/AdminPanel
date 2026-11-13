@@ -1,0 +1,145 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Websites page: list the sites nginx serves, test its configuration, and reload it.
+
+Listing only reads the site files under /etc/nginx. Reloading first runs nginx's own test and refuses to reload if the
+test fails, so a broken file can never take the panel's own port down. Nothing here edits a configuration file."""
+import json, os, re, subprocess, sys
+
+DIRS = ("/etc/nginx/sites-enabled", "/etc/nginx/conf.d")
+AVAILABLE = "/etc/nginx/sites-available"
+NGINX = "/usr/sbin/nginx"
+SYSTEMCTL = "/usr/bin/systemctl"
+ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
+CTRL = re.compile(r"[\x00-\x1f\x7f]")
+MAX_FILES = 200
+MAX_BYTES = 400_000
+FIELDS = ("server_name", "listen", "root", "ssl_certificate", "proxy_pass", "return", "fastcgi_pass")
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def clean(s, n=200):
+    return CTRL.sub("", s).strip()[:n]
+
+
+def strip_comments(text):
+    return "\n".join(l.split("#", 1)[0] for l in text.splitlines())
+
+
+def blocks(text):
+    """Yield the body of each top-level `server { ... }` block (brace counting)."""
+    out, i = [], 0
+    for m in re.finditer(r"\bserver\s*\{", text):
+        if m.start() < i:
+            continue
+        depth, j = 1, m.end()
+        while j < len(text) and depth:
+            depth += {"{": 1, "}": -1}.get(text[j], 0)
+            j += 1
+        out.append(text[m.end():j - 1])
+        i = j
+    return out
+
+
+def parse_block(body):
+    d = {k: [] for k in FIELDS}
+    for stmt in re.split(r"[;{}]", body):
+        m = re.match(r"\s*(\w+)\s+(.*)", stmt, re.S)
+        if m and m.group(1) in d:
+            d[m.group(1)].append(clean(" ".join(m.group(2).split())))
+    locs = len(re.findall(r"\blocation\b", body))
+    names = " ".join(d["server_name"]).split()
+    ports = []
+    for l in d["listen"]:
+        w = l.split()
+        if w:
+            ports.append(w[0])
+    ssl = bool(d["ssl_certificate"]) or any(re.search(r"\bssl\b", l) for l in d["listen"])
+    kind = "proxy" if d["proxy_pass"] else "php" if d["fastcgi_pass"] else "redirect" if any(r.startswith(("301", "302", "307", "308")) for r in d["return"]) else "files" if d["root"] else "other"
+    return {"names": names[:10], "listen": ports[:6], "https": ssl, "kind": kind, "root": (d["root"] or [""])[0],
+            "proxy": (d["proxy_pass"] or [""])[0], "certificate": (d["ssl_certificate"] or [""])[0], "locations": locs}
+
+
+def cmd_list():
+    sites = []
+    seen = 0
+    for d in DIRS:
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for n in names:
+            if seen >= MAX_FILES or n.startswith("."):
+                continue
+            p = os.path.join(d, n)
+            seen += 1
+            try:
+                if not os.path.isfile(p):
+                    continue
+                text = strip_comments(open(p, errors="replace").read(MAX_BYTES))
+            except OSError:
+                continue
+            for b in blocks(text):
+                info = parse_block(b)
+                info["file"] = clean(os.path.join(os.path.basename(d), n))
+                sites.append(info)
+    avail = 0
+    try:
+        avail = len(os.listdir(AVAILABLE))
+    except OSError:
+        pass
+    print(json.dumps({"installed": os.path.exists(NGINX), "sites": sites[:300], "available_files": avail}))
+
+
+def run(*args, timeout=30):
+    try:
+        return subprocess.run(list(args), capture_output=True, text=True, errors="replace", env=ENV,
+                              stdin=subprocess.DEVNULL, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        die("nginx did not answer in time", 1)
+    except OSError as e:
+        die("Could not run nginx: " + clean(str(e), 100), 1)
+
+
+def test():
+    r = run(NGINX, "-t")
+    text = clean((r.stderr + "\n" + r.stdout).replace("\n", " | "), 1500)
+    return r.returncode == 0, text
+
+
+def cmd_test():
+    if not os.path.exists(NGINX):
+        die("nginx is not installed", 1)
+    ok, text = test()
+    print(json.dumps({"ok": ok, "output": text}))
+
+
+def cmd_reload():
+    if not os.path.exists(NGINX):
+        die("nginx is not installed", 1)
+    ok, text = test()
+    if not ok:
+        die("The configuration has an error, so nginx was NOT reloaded: " + text[:400], 1)
+    r = run(SYSTEMCTL, "reload", "nginx")
+    if r.returncode != 0:
+        die("The reload failed: " + clean((r.stderr or r.stdout), 300), 1)
+    print(json.dumps({"ok": True, "output": text}))
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["list"]:
+        return cmd_list()
+    if a == ["test"]:
+        return cmd_test()
+    if a == ["reload"]:
+        return cmd_reload()
+    if a == ["check"]:
+        return print(json.dumps({"ok": True}))
+    die("usage: list | test | reload | check")
+
+
+main()
