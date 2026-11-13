@@ -1,0 +1,202 @@
+#!/usr/bin/python3 -I
+"""Root helper for the Compose page: list Docker Compose projects and start, stop, restart, pull or update one.
+
+Access to Docker is the same as root, so this helper allows only a fixed set of verbs, and only for a project that
+Docker itself lists, using the compose files Docker recorded for it. It cannot create a project, run `down`, remove
+volumes or images, or run a command inside a container. A project is named by its Compose project name."""
+import grp, json, os, pwd, re, stat, subprocess, sys
+
+DOCKER = "/usr/bin/docker"
+ENV = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": "/root", "COMPOSE_ANSI": "never", "NO_COLOR": "1"}
+NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+VERBS = {"start": ["start"], "stop": ["stop"], "restart": ["restart"], "pull": ["pull"], "up": ["up", "-d"]}
+TIMEOUT = {"start": 180, "stop": 180, "restart": 240, "pull": 900, "up": 600}
+MAX_PROJECTS = 100
+LOG_LINES = 300
+LOG_CAP = 200_000
+FILE_CAP = 200_000
+OUT_CAP = 20_000
+CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+SECRET = re.compile(r"^(\s*-?\s*['\"]?[A-Za-z0-9_.]*(?:PASSWORD|PASSWD|SECRET|TOKEN|KEY|CREDENTIAL)[A-Za-z0-9_.]*['\"]?\s*[:=]\s*)(\S.*)$", re.I)
+
+
+def die(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def cut(v, n=200):
+    return CTRL.sub("", str(v))[:n]
+
+
+def docker(*args, timeout=30):
+    try:
+        return subprocess.run([DOCKER, *args], capture_output=True, text=True, errors="replace", env=ENV,
+                              stdin=subprocess.DEVNULL, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        die("Docker did not answer in time", 1)
+
+
+def last_error(r, default="failed"):
+    e = (r.stderr or r.stdout or default).strip().splitlines()
+    return cut(e[-1] if e else default, 240)
+
+
+def trusted(st):
+    # Owned by root or by a docker-group member (root-equivalent anyway), and not writable by group or others.
+    if st.st_mode & 0o022:
+        return False
+    if st.st_uid == 0:
+        return True
+    try:
+        g, u = grp.getgrnam("docker"), pwd.getpwuid(st.st_uid)
+    except KeyError:
+        return False
+    return u.pw_name in g.gr_mem or u.pw_gid == g.gr_gid
+
+
+def safe_path(f):
+    # The file and every folder above it must be trusted, so nobody else can swap the file after Docker recorded it.
+    f = os.path.realpath(f)
+    p = f
+    while True:
+        try:
+            if not trusted(os.lstat(p)):
+                return None
+        except OSError:
+            return None
+        if p == "/":
+            return f
+        p = os.path.dirname(p)
+
+
+def projects():
+    """The projects Docker lists, as {name: {status, files}}. Only absolute paths of existing regular files are kept."""
+    r = docker("compose", "ls", "-a", "--format", "json", timeout=30)
+    if r.returncode != 0:
+        die(last_error(r, "docker compose is not available"), 1)
+    try:
+        data = json.loads(r.stdout or "[]")
+    except ValueError:
+        die("Docker returned something unexpected", 1)
+    out = {}
+    for p in data[:MAX_PROJECTS] if isinstance(data, list) else []:
+        name = str(p.get("Name", ""))
+        if not NAME_RE.fullmatch(name):
+            continue
+        files = []
+        for f in str(p.get("ConfigFiles", "")).split(","):
+            f = f.strip()
+            if f.startswith("/") and ".." not in f.split("/") and os.path.isfile(f):
+                real = safe_path(f)
+                if real:
+                    files.append(real)
+        out[name] = {"status": cut(p.get("Status", ""), 80), "files": files}
+    return out
+
+
+def services(name, files):
+    args = ["compose", "-p", name]
+    for f in files:
+        args += ["-f", f]
+    r = docker(*args, "ps", "-a", "--format", "json", timeout=40)
+    rows = []
+    text = (r.stdout or "").strip()
+    if r.returncode != 0 or not text:
+        return rows
+    try:
+        items = json.loads(text) if text.startswith("[") else [json.loads(l) for l in text.splitlines() if l.strip()]
+    except ValueError:
+        return rows
+    for c in items[:200]:
+        rows.append({"service": cut(c.get("Service", ""), 80), "container": cut(c.get("Name", ""), 100),
+                     "image": cut(c.get("Image", "")), "state": cut(c.get("State", ""), 30),
+                     "status": cut(c.get("Status", "")), "ports": cut(c.get("Ports", ""), 300)})
+    return rows
+
+
+def cmd_list():
+    if not os.path.exists(DOCKER):
+        print(json.dumps({"installed": False, "running": False, "projects": []}))
+        return
+    v = docker("version", "--format", "{{.Server.Version}}", timeout=15)
+    if v.returncode != 0:
+        print(json.dumps({"installed": True, "running": False, "projects": [], "error": last_error(v, "the Docker service is not running")}))
+        return
+    c = docker("compose", "version", "--short", timeout=15)
+    if c.returncode != 0:
+        print(json.dumps({"installed": True, "running": True, "compose": False, "projects": []}))
+        return
+    ps = projects()
+    out = [{"name": n, "status": p["status"], "files": [cut(f, 300) for f in p["files"]], "services": services(n, p["files"])}
+           for n, p in sorted(ps.items())]
+    print(json.dumps({"installed": True, "running": True, "compose": True, "version": cut(c.stdout.strip(), 40), "projects": out}))
+
+
+def known(name):
+    if not NAME_RE.fullmatch(name or ""):
+        die("invalid project name")
+    p = projects().get(name)
+    if not p:
+        die("Docker has no such Compose project")
+    if not p["files"]:
+        die("The compose file is missing, or it or a folder above it can be changed by someone who is not root or in the docker group")
+    return p
+
+
+def base(name, files):
+    a = ["compose", "-p", name]
+    for f in files:
+        a += ["-f", f]
+    return a
+
+
+def cmd_action(verb, name):
+    p = known(name)
+    r = docker(*base(name, p["files"]), *VERBS[verb], timeout=TIMEOUT[verb])
+    text = CTRL.sub("", ANSI.sub("", (r.stdout or "") + (r.stderr or ""))).strip()[-OUT_CAP:]
+    if r.returncode != 0:
+        die(last_error(r), 1)
+    print(text or "ok")
+
+
+def cmd_logs(name):
+    p = known(name)
+    r = docker(*base(name, p["files"]), "logs", "--tail", str(LOG_LINES), "--timestamps", "--no-color", timeout=40)
+    print(CTRL.sub("", ANSI.sub("", (r.stdout or "") + (r.stderr or "")))[-LOG_CAP:], end="")
+
+
+def cmd_file(name):
+    p = known(name)
+    out = []
+    for f in p["files"]:
+        try:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                body = fh.read(FILE_CAP)
+        except OSError as e:
+            body = "(could not read: " + cut(e, 100) + ")"
+        lines = []
+        for line in body.splitlines():
+            m = SECRET.match(line)
+            lines.append(m.group(1) + "********" if m and m.group(2).strip() not in ("", "|", ">") else line)
+        out.append({"path": cut(f, 300), "text": CTRL.sub("", "\n".join(lines))})
+    print(json.dumps({"files": out}))
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["list"]:
+        return cmd_list()
+    if a == ["check"]:
+        return print(json.dumps({"ok": True}))
+    if len(a) == 2 and a[0] == "logs":
+        return cmd_logs(a[1])
+    if len(a) == 2 and a[0] == "file":
+        return cmd_file(a[1])
+    if len(a) == 2 and a[0] in VERBS:
+        return cmd_action(a[0], a[1])
+    die("usage: list | start NAME | stop NAME | restart NAME | pull NAME | up NAME | logs NAME | file NAME | check")
+
+
+main()

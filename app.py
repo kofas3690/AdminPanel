@@ -50,6 +50,7 @@ from websites import router as websites_router
 from certrenew import router as certrenew_router
 from weblogs import router as weblogs_router
 from hosts import router as hosts_router
+from compose import router as compose_router
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -109,6 +110,7 @@ app.include_router(websites_router)
 app.include_router(certrenew_router)
 app.include_router(weblogs_router)
 app.include_router(hosts_router)
+app.include_router(compose_router)
 
 app.include_router(fleet_router)
 app.include_router(health_router)

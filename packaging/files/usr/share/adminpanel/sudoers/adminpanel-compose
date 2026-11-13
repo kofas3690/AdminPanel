@@ -1,0 +1,2 @@
+# Installed by the adminpanel package.
+adminpanel ALL=(root) NOPASSWD: /usr/local/sbin/adminpanel-compose list, /usr/local/sbin/adminpanel-compose start *, /usr/local/sbin/adminpanel-compose stop *, /usr/local/sbin/adminpanel-compose restart *, /usr/local/sbin/adminpanel-compose pull *, /usr/local/sbin/adminpanel-compose up *, /usr/local/sbin/adminpanel-compose logs *, /usr/local/sbin/adminpanel-compose file *, /usr/local/sbin/adminpanel-compose check
